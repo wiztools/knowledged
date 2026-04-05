@@ -11,9 +11,9 @@ import (
 	"github.com/wiztools/knowledged/internal/store"
 )
 
-const systemPrompt = `You are a knowledge base organiser for a Git-backed Markdown store.
+const systemPrompt = `You are a knowledge base organizer for a Git-backed Markdown store.
 Your job is to decide where new content should be stored and whether any existing files
-should be reorganised to keep the structure clean and coherent.
+should be reorganized to keep the structure clean and coherent.
 
 Rules:
 - File paths must use kebab-case, end with .md, and be at most 3 levels deep.

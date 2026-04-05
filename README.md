@@ -53,7 +53,7 @@ go build -o kc        ./cmd/kc
   --ollama-url http://localhost:11434   # default, can be omitted
 ```
 
-**`--repo` behaviour:**
+**`--repo` behavior:**
 
 | Directory state | Action |
 |---|---|
@@ -99,7 +99,7 @@ cat meeting-notes.md | kc post --tags "meeting,q3"
 |---|---|---|
 | `--content` | | Inline content string |
 | `--file` | | Path to file to store |
-| `--hint` | | Topic hint for the LLM organiser |
+| `--hint` | | Topic hint for the LLM organizer |
 | `--tags` | | Comma-separated tags |
 | `--wait` | false | Block until job completes |
 | `--timeout` | 120 | Seconds to wait (with `--wait`) |
@@ -181,7 +181,7 @@ kc --server http://10.0.0.5:9000 post --content "..."
 ├── queue.json       # live job queue (unversioned)
 └── <topic>/
     └── <subtopic>/
-        └── file.md  # organised by the LLM, max 3 levels deep
+        └── file.md  # organized by the LLM, max 3 levels deep
 ```
 
 `INDEX.md` is kept in sync with every commit:

@@ -82,7 +82,7 @@ kc get --query <text> [--mode raw|synthesize]
 | `--query` | Natural-language query |
 | `--mode` | `synthesize` (default) or `raw` — only applies with `--query` |
 
-**Mode behaviour:**
+**Mode behavior:**
 
 | Invocation | What is returned |
 |---|---|

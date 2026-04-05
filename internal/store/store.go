@@ -22,7 +22,7 @@ type Store struct {
 	logger   *slog.Logger
 }
 
-// New opens or initialises the Git repository at repoPath.
+// New opens or initializes the Git repository at repoPath.
 //
 //   - If repoPath does not exist    → create directory + git init
 //   - If repoPath is empty dir      → git init
@@ -82,7 +82,7 @@ func initRepo(repoPath string, logger *slog.Logger) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git init: %w", err)
 	}
-	logger.Info("initialised new Git repository", "path", repoPath)
+	logger.Info("initialized new Git repository", "path", repoPath)
 
 	wt, err := repo.Worktree()
 	if err != nil {

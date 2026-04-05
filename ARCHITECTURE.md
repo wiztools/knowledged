@@ -81,7 +81,7 @@ Worker goroutine (wakes on signal)
   │                         ▲
   │                 job ID embedded — used for crash recovery
   │
-  └─ finalise(): mark job done/failed in queue.json, cache in results map
+  └─ finalize(): mark job done/failed in queue.json, cache in results map
 ```
 
 ---

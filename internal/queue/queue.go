@@ -141,7 +141,7 @@ func (q *Queue) GetJob(id string) (*Job, bool) {
 }
 
 // Start launches the worker and the TTL eviction goroutine.
-// It blocks until ctx is cancelled.
+// It blocks until ctx is canceled.
 func (q *Queue) Start(ctx context.Context) {
 	q.logger.Info("queue worker started")
 	go q.evictExpiredResults(ctx)
@@ -226,24 +226,24 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 	decision, err := q.organizer.Decide(ctx, job.Content, job.Hint, job.Tags)
 	if err != nil {
 		q.logger.Error("organizer decision failed", "job_id", job.ID, "error", err)
-		q.finalise(job, "", err)
+		q.finalize(job, "", err)
 		return
 	}
 
 	if err := q.organizer.Execute(ctx, job.ID, job.Content, decision); err != nil {
 		q.logger.Error("organizer execute failed", "job_id", job.ID, "error", err)
-		q.finalise(job, "", err)
+		q.finalize(job, "", err)
 		return
 	}
 
 	q.logger.Info("job completed successfully", "job_id", job.ID, "path", decision.TargetPath)
-	q.finalise(job, decision.TargetPath, nil)
+	q.finalize(job, decision.TargetPath, nil)
 }
 
-// finalise marks a job terminal, removes it from queue.json (keeping the file
+// finalize marks a job terminal, removes it from queue.json (keeping the file
 // lean — only active jobs remain), and caches it in the results map for
 // subsequent GET /jobs/{id} lookups within the TTL window.
-func (q *Queue) finalise(job *Job, path string, execErr error) {
+func (q *Queue) finalize(job *Job, path string, execErr error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -251,7 +251,7 @@ func (q *Queue) finalise(job *Job, path string, execErr error) {
 
 	jobs, err := q.loadJobs()
 	if err != nil {
-		q.logger.Error("failed to load queue during finalise", "job_id", job.ID, "error", err)
+		q.logger.Error("failed to load queue during finalize", "job_id", job.ID, "error", err)
 		return
 	}
 
@@ -277,7 +277,7 @@ func (q *Queue) finalise(job *Job, path string, execErr error) {
 	}
 
 	if err := q.saveJobs(active); err != nil {
-		q.logger.Error("failed to save queue during finalise", "job_id", job.ID, "error", err)
+		q.logger.Error("failed to save queue during finalize", "job_id", job.ID, "error", err)
 	}
 
 	// Cache for GET /jobs/{id} lookups until TTL expires.

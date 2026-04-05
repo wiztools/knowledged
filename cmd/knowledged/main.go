@@ -48,10 +48,10 @@ func main() {
 	)
 
 	// ── Store (Git backend) ───────────────────────────────────────────────────
-	logger.Info("initialising knowledge store", "path", *repoPath)
+	logger.Info("initializing knowledge store", "path", *repoPath)
 	st, err := store.New(*repoPath, logger)
 	if err != nil {
-		logger.Error("failed to initialise store", "error", err)
+		logger.Error("failed to initialize store", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("knowledge store ready", "path", st.RepoPath())
@@ -61,7 +61,7 @@ func main() {
 	switch *providerName {
 	case "ollama":
 		provider = llm.NewOllama(*ollamaURL, *model, logger)
-		logger.Info("LLM provider initialised",
+		logger.Info("LLM provider initialized",
 			"provider", "ollama",
 			"url", *ollamaURL,
 			"model", *model)
@@ -73,13 +73,13 @@ func main() {
 
 	// ── Organizer ─────────────────────────────────────────────────────────────
 	org := organizer.New(st, provider, logger)
-	logger.Info("organizer initialised")
+	logger.Info("organizer initialized")
 
 	// ── Queue ─────────────────────────────────────────────────────────────────
 	logger.Info("initialising job queue")
 	q, err := queue.New(st, org, logger)
 	if err != nil {
-		logger.Error("failed to initialise queue", "error", err)
+		logger.Error("failed to initialize queue", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("job queue ready")
