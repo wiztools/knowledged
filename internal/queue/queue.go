@@ -240,9 +240,12 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 	q.finalize(job, decision.TargetPath, nil)
 }
 
-// finalize marks a job terminal, removes it from queue.json (keeping the file
-// lean — only active jobs remain), and caches it in the results map for
-// subsequent GET /jobs/{id} lookups within the TTL window.
+// finalize marks a job terminal and updates queue.json:
+//   - done  → removed from queue.json (no retry needed)
+//   - failed → kept in queue.json so the next server startup retries it
+//
+// Either way the job is cached in the results map for GET /jobs/{id} lookups
+// within the TTL window.
 func (q *Queue) finalize(job *Job, path string, execErr error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -255,22 +258,26 @@ func (q *Queue) finalize(job *Job, path string, execErr error) {
 		return
 	}
 
-	// Update the job's fields in the slice and build the filtered list in one pass.
-	active := jobs[:0]
+	var active []*Job
 	for _, j := range jobs {
 		if j.ID == job.ID {
 			if execErr != nil {
 				j.Status = StatusFailed
 				j.Error = execErr.Error()
+				j.CompletedAt = &now
+				*job = *j
+				// Keep in queue.json — will be retried on next server start.
+				active = append(active, j)
+				q.logger.Debug("keeping failed job in queue.json for retry on restart",
+					"job_id", j.ID, "error", execErr.Error())
 			} else {
 				j.Status = StatusDone
 				j.Path = path
+				j.CompletedAt = &now
+				*job = *j
+				// Done — remove from queue.json.
+				q.logger.Debug("removing completed job from queue.json", "job_id", j.ID)
 			}
-			j.CompletedAt = &now
-			*job = *j
-			// Terminal — do not keep in queue.json.
-			q.logger.Debug("removing terminal job from queue.json",
-				"job_id", j.ID, "status", j.Status)
 			continue
 		}
 		active = append(active, j)
@@ -285,15 +292,16 @@ func (q *Queue) finalize(job *Job, path string, execErr error) {
 	q.resultsMu.Lock()
 	q.results[job.ID] = &jobCopy
 	q.resultsMu.Unlock()
-	q.logger.Debug("cached terminal job in results map (TTL: 1h)", "job_id", job.ID)
+	q.logger.Debug("cached job in results map (TTL: 1h)", "job_id", job.ID)
 }
 
 // reconcile is called once on startup. It handles any jobs left in a
 // non-terminal state from a previous run.
 //
-//   - done / failed  → loaded into in-memory results map, kept in file
-//   - queued         → re-signal worker
-//   - processing     → check git log; done if committed, else reset to queued
+//   - done       → loaded into results map, pruned from file
+//   - failed     → reset to queued and retried
+//   - queued     → re-signal worker
+//   - processing → check git log; done if committed, else reset to queued
 func (q *Queue) reconcile() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -314,11 +322,24 @@ func (q *Queue) reconcile() error {
 
 	for _, job := range jobs {
 		switch job.Status {
-		case StatusDone, StatusFailed:
-			// Load into results map so they remain queryable, then drop from file.
+		case StatusDone:
+			// Completed successfully — load into results map and prune from file.
 			q.results[job.ID] = job
-			q.logger.Debug("pruning terminal job from queue.json on startup",
-				"job_id", job.ID, "status", job.Status)
+			q.logger.Debug("pruning completed job from queue.json on startup",
+				"job_id", job.ID)
+
+		case StatusFailed:
+			// Previous run failed — clear the error and retry.
+			q.logger.Info("retrying previously failed job",
+				"job_id", job.ID, "previous_error", job.Error)
+			job.Status = StatusQueued
+			job.Error = ""
+			job.CompletedAt = nil
+			active = append(active, job)
+			select {
+			case q.signal <- struct{}{}:
+			default:
+			}
 
 		case StatusQueued:
 			q.logger.Info("found pending job — will retry", "job_id", job.ID)
