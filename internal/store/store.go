@@ -72,7 +72,7 @@ func New(repoPath string, logger *slog.Logger) (*Store, error) {
 		return nil, fmt.Errorf("directory is not empty and is not a Git repository: %s", repoPath)
 	}
 
-	logger.Info("empty directory — initialising Git repository", "path", repoPath)
+	logger.Info("empty directory — initializing Git repository", "path", repoPath)
 	return initRepo(repoPath, logger)
 }
 

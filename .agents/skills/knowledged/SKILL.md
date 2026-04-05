@@ -30,9 +30,9 @@ All commands accept `--server` before the subcommand name to target a non-defaul
 - `kc post` is **async** — it returns a job ID immediately. Use `--wait` to block until the content is stored and get back the final path in one step.
 - When not using `--wait`, check completion with `kc job --id <id>` before referencing the stored path.
 - `kc get --query` calls the LLM on the server side; it may take several seconds.
-- `kc get --mode raw` is faster and returns verbatim document content — prefer it when you only need to retrieve, not synthesise.
+- `kc get --mode raw` is faster and returns verbatim document content — prefer it when you only need to retrieve, not synthesize.
 - Content can be piped via stdin: `echo "..." | kc post`.
-- `sources:` lines from `kc get --query` are printed to stderr; only the synthesised answer goes to stdout — safe to capture with `$()` or redirect.
+- `sources:` lines from `kc get --query` are printed to stderr; only the synthesized answer goes to stdout — safe to capture with `$()` or redirect.
 
 ## Commands
 
@@ -87,7 +87,7 @@ kc get --query <text> [--mode raw|synthesize]
 | Invocation | What is returned |
 |---|---|
 | `--path` | Raw content of the single file |
-| `--query` (default / `--mode synthesize`) | LLM-synthesised answer drawn from relevant documents; sources printed to stderr |
+| `--query` (default / `--mode synthesize`) | LLM-synthesized answer drawn from relevant documents; sources printed to stderr |
 | `--query --mode raw` | Raw content of all matching documents, no synthesis |
 
 ```sh
@@ -176,7 +176,7 @@ error  : <message>                # on failure
 
 **`kc get --query` (synthesis)**
 ```
-<synthesised answer>
+<synthesized answer>
 ```
 _(sources line is on stderr: `sources: path/a.md, path/b.md`)_
 

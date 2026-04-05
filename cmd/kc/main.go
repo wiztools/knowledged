@@ -145,7 +145,7 @@ func runGet(server string, args []string, logger *slog.Logger) {
 Retrieve content from the knowledge base.
 
   --path   returns the raw file content.
-  --query  returns a synthesised answer (default) or matching raw docs (--mode raw).
+  --query  returns a synthesized answer (default) or matching raw docs (--mode raw).
 
 Flags:`)
 		fs.PrintDefaults()

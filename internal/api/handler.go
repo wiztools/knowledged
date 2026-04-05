@@ -118,7 +118,7 @@ type synthesisResponse struct {
 	Answer  string   `json:"answer"`
 }
 
-// GetContent serves content either as raw files or as an LLM-synthesised answer.
+// GetContent serves content either as raw files or as an LLM-synthesized answer.
 func (h *Handler) GetContent(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	query := r.URL.Query().Get("query")

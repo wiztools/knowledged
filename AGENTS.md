@@ -4,7 +4,7 @@ This document describes how AI agents should interact with this repository and t
 
 ## What this system is
 
-knowledged is a Git-backed knowledge base managed by an HTTP server. Agents can store knowledge persistently (surviving across conversations) and retrieve it later — either as raw Markdown or as LLM-synthesised answers drawn from multiple documents.
+knowledged is a Git-backed knowledge base managed by an HTTP server. Agents can store knowledge persistently (surviving across conversations) and retrieve it later — either as raw Markdown or as LLM-synthesized answers drawn from multiple documents.
 
 The `kc` CLI is the intended interface for agents. The server must be running before any `kc` command will work.
 
@@ -78,9 +78,9 @@ kc get --query "what patterns do we use for error handling?"
 kc get --query "docker" --mode raw
 ```
 
-**Capture just the synthesised answer:**
+**Capture just the synthesized answer:**
 ```sh
-answer=$(kc get --query "summarise our Go conventions")
+answer=$(kc get --query "summarize our Go conventions")
 ```
 
 ## Checking the index
@@ -110,7 +110,7 @@ If the server restarts mid-job, recovery is automatic. On startup the server sca
 **Do:**
 - Always provide `--hint` when storing content.
 - Use `--wait` when you need to reference the stored path in the same session.
-- Use `--mode raw` when you only need to read documents, not synthesise.
+- Use `--mode raw` when you only need to read documents, not synthesize.
 - Check `INDEX.md` before storing to avoid near-duplicate entries.
 
 **Don't:**
@@ -152,5 +152,5 @@ error  : <message>               # on failure
 ```
 
 **`kc get --query` (synthesis)**
-- stdout: synthesised answer (plain text)
+- stdout: synthesized answer (plain text)
 - stderr: `sources: path/a.md, path/b.md`

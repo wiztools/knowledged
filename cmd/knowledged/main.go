@@ -76,7 +76,7 @@ func main() {
 	logger.Info("organizer initialized")
 
 	// ── Queue ─────────────────────────────────────────────────────────────────
-	logger.Info("initialising job queue")
+	logger.Info("initializing job queue")
 	q, err := queue.New(st, org, logger)
 	if err != nil {
 		logger.Error("failed to initialize queue", "error", err)

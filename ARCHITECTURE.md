@@ -16,7 +16,7 @@
 │  Queue Worker  │  │           Query Engine                │
 │  (1 goroutine) │  │  - LLM: which docs are relevant?     │
 │  serializes    │  │  - read matching files               │
-│  all writes    │  │  - LLM: synthesise answer            │
+│  all writes    │  │  - LLM: synthesize answer            │
 └───────┬────────┘  └──────────────────────────────────────┘
         │
         ▼

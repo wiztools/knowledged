@@ -1,8 +1,8 @@
 # knowledged
 
-A self-organising, Git-backed knowledge base with an HTTP interface and LLM-powered storage and retrieval.
+A self-organizing, Git-backed knowledge base with an HTTP interface and LLM-powered storage and retrieval.
 
-You write content in; the LLM decides where it belongs, keeps the folder structure tidy, and commits everything to Git. You query content back either as raw Markdown files or as synthesised answers drawn from multiple documents.
+You write content in; the LLM decides where it belongs, keeps the folder structure tidy, and commits everything to Git. You query content back either as raw Markdown files or as synthesized answers drawn from multiple documents.
 
 ## How it works
 
@@ -18,7 +18,7 @@ POST /content ──► queue.json (durable) ──► worker
 
 GET /content ──► LLM: which docs match?
                  read files
-                 LLM: synthesise answer  (or return raw)
+                 LLM: synthesize answer  (or return raw)
 ```
 
 Every write is a real Git commit. Crash recovery works by scanning the commit log — if a job's ID appears in a commit message, it was already completed.
@@ -110,7 +110,7 @@ cat meeting-notes.md | kc post --tags "meeting,q3"
 # Raw file by path
 kc get --path tech/go/goroutines.md
 
-# LLM-synthesised answer (default for --query)
+# LLM-synthesized answer (default for --query)
 kc get --query "how does Rust handle memory safety?"
 
 # Raw matching documents, no synthesis
