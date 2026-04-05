@@ -26,16 +26,20 @@ const (
 	StatusFailed     Status = "failed"
 )
 
+// resultsTTL is how long a completed job stays queryable via GET /jobs/{id}.
+const resultsTTL = time.Hour
+
 // Job represents one unit of work: store a piece of content.
 type Job struct {
-	ID        string    `json:"id"`
-	Status    Status    `json:"status"`
-	Timestamp time.Time `json:"ts"`
-	Content   string    `json:"content"`
-	Hint      string    `json:"hint,omitempty"`
-	Tags      []string  `json:"tags,omitempty"`
-	Path      string    `json:"path,omitempty"`  // set after successful store
-	Error     string    `json:"error,omitempty"` // set on failure
+	ID          string     `json:"id"`
+	Status      Status     `json:"status"`
+	Timestamp   time.Time  `json:"ts"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"` // set when terminal; used for TTL eviction
+	Content     string     `json:"content"`
+	Hint        string     `json:"hint,omitempty"`
+	Tags        []string   `json:"tags,omitempty"`
+	Path        string     `json:"path,omitempty"`  // set after successful store
+	Error       string     `json:"error,omitempty"` // set on failure
 }
 
 // Queue is a file-backed, single-worker job queue.
@@ -136,9 +140,11 @@ func (q *Queue) GetJob(id string) (*Job, bool) {
 	return nil, false
 }
 
-// Start launches the single worker goroutine. It blocks until ctx is cancelled.
+// Start launches the worker and the TTL eviction goroutine.
+// It blocks until ctx is cancelled.
 func (q *Queue) Start(ctx context.Context) {
 	q.logger.Info("queue worker started")
+	go q.evictExpiredResults(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -146,6 +152,33 @@ func (q *Queue) Start(ctx context.Context) {
 			return
 		case <-q.signal:
 			q.drainQueue(ctx)
+		}
+	}
+}
+
+// evictExpiredResults periodically removes completed jobs from the in-memory
+// results map once they exceed resultsTTL. Runs every 5 minutes.
+func (q *Queue) evictExpiredResults(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			q.resultsMu.Lock()
+			evicted := 0
+			for id, job := range q.results {
+				if job.CompletedAt != nil && time.Since(*job.CompletedAt) > resultsTTL {
+					delete(q.results, id)
+					evicted++
+				}
+			}
+			q.resultsMu.Unlock()
+			if evicted > 0 {
+				q.logger.Info("evicted expired job results from memory",
+					"count", evicted, "ttl", resultsTTL)
+			}
 		}
 	}
 }
@@ -207,16 +240,23 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 	q.finalise(job, decision.TargetPath, nil)
 }
 
-// finalise updates the job's terminal status in the queue file and results map.
+// finalise marks a job terminal, removes it from queue.json (keeping the file
+// lean — only active jobs remain), and caches it in the results map for
+// subsequent GET /jobs/{id} lookups within the TTL window.
 func (q *Queue) finalise(job *Job, path string, execErr error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	now := time.Now().UTC()
 
 	jobs, err := q.loadJobs()
 	if err != nil {
 		q.logger.Error("failed to load queue during finalise", "job_id", job.ID, "error", err)
 		return
 	}
+
+	// Update the job's fields in the slice and build the filtered list in one pass.
+	active := jobs[:0]
 	for _, j := range jobs {
 		if j.ID == job.ID {
 			if execErr != nil {
@@ -226,20 +266,26 @@ func (q *Queue) finalise(job *Job, path string, execErr error) {
 				j.Status = StatusDone
 				j.Path = path
 			}
-			// Update the in-memory pointer so our results copy is also current.
+			j.CompletedAt = &now
 			*job = *j
-			break
+			// Terminal — do not keep in queue.json.
+			q.logger.Debug("removing terminal job from queue.json",
+				"job_id", j.ID, "status", j.Status)
+			continue
 		}
+		active = append(active, j)
 	}
-	if err := q.saveJobs(jobs); err != nil {
+
+	if err := q.saveJobs(active); err != nil {
 		q.logger.Error("failed to save queue during finalise", "job_id", job.ID, "error", err)
 	}
 
-	// Cache in results map for fast lookups after the job is gone from the file.
+	// Cache for GET /jobs/{id} lookups until TTL expires.
 	jobCopy := *job
 	q.resultsMu.Lock()
 	q.results[job.ID] = &jobCopy
 	q.resultsMu.Unlock()
+	q.logger.Debug("cached terminal job in results map (TTL: 1h)", "job_id", job.ID)
 }
 
 // reconcile is called once on startup. It handles any jobs left in a
@@ -263,16 +309,20 @@ func (q *Queue) reconcile() error {
 
 	q.logger.Info("reconciling queue on startup", "total_jobs", len(jobs))
 
-	changed := false
+	now := time.Now().UTC()
+	var active []*Job // only non-terminal jobs go back into queue.json
+
 	for _, job := range jobs {
 		switch job.Status {
 		case StatusDone, StatusFailed:
+			// Load into results map so they remain queryable, then drop from file.
 			q.results[job.ID] = job
-			q.logger.Debug("loaded terminal job into results map",
+			q.logger.Debug("pruning terminal job from queue.json on startup",
 				"job_id", job.ID, "status", job.Status)
 
 		case StatusQueued:
 			q.logger.Info("found pending job — will retry", "job_id", job.ID)
+			active = append(active, job)
 			select {
 			case q.signal <- struct{}{}:
 			default:
@@ -286,29 +336,33 @@ func (q *Queue) reconcile() error {
 				q.logger.Warn("git log check failed — resetting job to queued",
 					"job_id", job.ID, "error", err)
 				job.Status = StatusQueued
+				active = append(active, job)
 			} else if found {
 				q.logger.Info("git commit found — marking job done (crash recovery)",
 					"job_id", job.ID)
 				job.Status = StatusDone
+				job.CompletedAt = &now
 				q.results[job.ID] = job
+				// Terminal — drop from file.
 			} else {
 				q.logger.Info("no git commit found — resetting job to queued for retry",
 					"job_id", job.ID)
 				job.Status = StatusQueued
+				active = append(active, job)
 				select {
 				case q.signal <- struct{}{}:
 				default:
 				}
 			}
-			changed = true
 		}
 	}
 
-	if changed {
-		if err := q.saveJobs(jobs); err != nil {
-			return fmt.Errorf("saving reconciled queue: %w", err)
-		}
+	if err := q.saveJobs(active); err != nil {
+		return fmt.Errorf("saving reconciled queue: %w", err)
 	}
+	q.logger.Info("queue reconciliation complete",
+		"active_jobs", len(active),
+		"pruned_terminal_jobs", len(jobs)-len(active))
 	return nil
 }
 
