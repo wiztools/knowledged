@@ -23,7 +23,7 @@ func main() {
 	repoPath := flag.String("repo", "", "path to the knowledge Git repository (required)")
 	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (currently: ollama)")
 	model := flag.String("model", "mistral-small3.1", "LLM model name")
-	port := flag.String("port", "8080", "HTTP listen port")
+	port := flag.String("port", "9090", "HTTP listen port")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
 	flag.Parse()
 

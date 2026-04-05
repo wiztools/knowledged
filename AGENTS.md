@@ -25,7 +25,7 @@ Load it when working with this system. It documents all commands, flags, output 
 go build -o kc ./cmd/kc
 
 # Verify the server is reachable (adjust URL if needed)
-curl -s http://localhost:8080/content?path=INDEX.md
+curl -s http://localhost:9090/content?path=INDEX.md
 ```
 
 If the server is not running, start it:

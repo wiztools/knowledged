@@ -300,11 +300,11 @@ func (q *Queue) reconcile() error {
 
 	jobs, err := q.loadJobs()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			q.logger.Info("no queue file found — starting fresh")
-			return nil
-		}
 		return fmt.Errorf("loading queue file: %w", err)
+	}
+	if len(jobs) == 0 {
+		q.logger.Info("no queue file found — starting fresh")
+		return nil
 	}
 
 	q.logger.Info("reconciling queue on startup", "total_jobs", len(jobs))
@@ -366,10 +366,13 @@ func (q *Queue) reconcile() error {
 	return nil
 }
 
-// loadJobs reads queue.json. Returns os.ErrNotExist if the file does not exist.
+// loadJobs reads queue.json. A missing file is treated as an empty queue.
 func (q *Queue) loadJobs() ([]*Job, error) {
 	data, err := os.ReadFile(q.path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if len(data) == 0 {

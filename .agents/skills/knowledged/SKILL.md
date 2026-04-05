@@ -13,9 +13,9 @@ description: Store and retrieve knowledge using the knowledged server via the kc
   ```
 - A `knowledged` server must be running:
   ```sh
-  knowledged --repo /path/to/kb --model mistral-small3.1 --port 8080
+  knowledged --repo /path/to/kb --model mistral-small3.1 --port 9090
   ```
-- Default server URL is `http://localhost:8080`. Override with the global `--server` flag.
+- Default server URL is `http://localhost:9090`. Override with the global `--server` flag.
 
 ## Global flag
 

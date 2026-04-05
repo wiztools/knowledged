@@ -49,7 +49,7 @@ go build -o kc        ./cmd/kc
 ./knowledged \
   --repo     /path/to/knowledge-repo \
   --model    mistral-small3.1 \
-  --port     8080 \
+  --port     9090 \
   --ollama-url http://localhost:11434   # default, can be omitted
 ```
 
@@ -72,7 +72,7 @@ On first init the server creates `.gitignore` (excludes `queue.json`) and an emp
 | `--model` | `mistral-small3.1` | Ollama model name |
 | `--llm-provider` | `ollama` | LLM backend (`ollama` for v1) |
 | `--ollama-url` | `http://localhost:11434` | Ollama server URL |
-| `--port` | `8080` | HTTP listen port |
+| `--port` | `9090` | HTTP listen port |
 
 ## CLI client (`kc`)
 

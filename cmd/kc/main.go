@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-const defaultServer = "http://localhost:8080"
+const defaultServer = "http://localhost:9090"
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
