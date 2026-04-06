@@ -33,8 +33,9 @@ Every write is a real Git commit. Crash recovery works by scanning the commit lo
 ## Requirements
 
 - Go 1.22+
-- [Ollama](https://ollama.com) running locally (or any supported LLM provider)
-- A model pulled in Ollama, e.g. `ollama pull mistral-small3.1`
+- An LLM provider — either:
+  - [Ollama](https://ollama.com) running locally, with a model pulled (e.g. `ollama pull mistral-small3.1`), **or**
+  - An [Anthropic API key](https://console.anthropic.com/) set in the environment
 
 ## Build
 
@@ -45,13 +46,27 @@ go build -o kc        ./cmd/kc
 
 ## Server
 
+**Ollama (local):**
 ```sh
 ./knowledged \
-  --repo     /path/to/knowledge-repo \
-  --model    mistral-small3.1 \
-  --port     9090 \
-  --ollama-url http://localhost:11434   # default, can be omitted
+  --repo        /path/to/knowledge-repo \
+  --llm-provider ollama \
+  --model       mistral-small3.1 \
+  --port        9090
 ```
+
+**Anthropic:**
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+./knowledged \
+  --repo        /path/to/knowledge-repo \
+  --llm-provider anthropic \
+  --model       claude-sonnet-4-6 \
+  --port        9090
+```
+
+> The `ANTHROPIC_API_KEY` environment variable is the only supported way to supply the key.
+> It is never logged or written to disk.
 
 **`--repo` behavior:**
 
@@ -69,10 +84,16 @@ On first init the server creates `.gitignore` (excludes `queue.json`) and an emp
 | Flag | Default | Description |
 |---|---|---|
 | `--repo` | *(required)* | Path to the knowledge Git repository |
-| `--model` | `mistral-small3.1` | Ollama model name |
-| `--llm-provider` | `ollama` | LLM backend (`ollama` for v1) |
-| `--ollama-url` | `http://localhost:11434` | Ollama server URL |
+| `--llm-provider` | `ollama` | LLM backend: `ollama` or `anthropic` |
+| `--model` | `mistral-small3.1` / `claude-sonnet-4-6` | Model name (default depends on provider) |
+| `--ollama-url` | `http://localhost:11434` | Ollama server URL (Ollama provider only) |
 | `--port` | `9090` | HTTP listen port |
+
+**Environment variables:**
+
+| Variable | Required for |
+|---|---|
+| `ANTHROPIC_API_KEY` | `--llm-provider anthropic` |
 
 ## CLI client (`kc`)
 
@@ -218,6 +239,7 @@ internal/
   api/handler.go       HTTP handlers
   llm/provider.go      Provider interface
   llm/ollama.go        Ollama backend
+  llm/anthropic.go     Anthropic backend
   store/store.go       go-git wrapper
   store/index.go       INDEX.md helpers
   organizer/           LLM placement + execution

@@ -173,12 +173,21 @@ type Provider interface {
 
 The organizer and query engine depend only on this interface. Adding a new backend (Anthropic, OpenAI, etc.) requires implementing one method.
 
-### Ollama transport
+### Ollama transport (`llm/ollama.go`)
 
 - Endpoint: `POST <ollama-url>/api/chat`
 - Payload: `{ model, messages: [{role, content}, ...], stream: false }`
 - HTTP timeout: 120 s (LLM inference can be slow for large contexts)
 - Response: `message.content` string extracted from the JSON body
+
+### Anthropic transport (`llm/anthropic.go`)
+
+- Endpoint: `POST https://api.anthropic.com/v1/messages`
+- Headers: `x-api-key` (from `ANTHROPIC_API_KEY` env var), `anthropic-version: 2023-06-01`
+- Payload: `{ model, max_tokens: 4096, system, messages: [{role: "user", content}] }`
+- HTTP timeout: 120 s
+- Response: `content[0].text` string extracted from the JSON body
+- API key is read once at startup and never logged or persisted
 
 ### Organizer prompt contract
 

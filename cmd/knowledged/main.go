@@ -21,7 +21,7 @@ import (
 
 func main() {
 	repoPath := flag.String("repo", "", "path to the knowledge Git repository (required)")
-	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (currently: ollama)")
+	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic)")
 	model := flag.String("model", "mistral-small3.1", "LLM model name")
 	port := flag.String("port", "9090", "HTTP listen port")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
@@ -65,9 +65,23 @@ func main() {
 			"provider", "ollama",
 			"url", *ollamaURL,
 			"model", *model)
+	case "anthropic":
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			logger.Error("ANTHROPIC_API_KEY environment variable is not set")
+			os.Exit(1)
+		}
+		// Default to claude-3-5-haiku if the user didn't override the model flag.
+		if *model == "mistral-small3.1" {
+			*model = "claude-sonnet-4-6"
+		}
+		provider = llm.NewAnthropic(apiKey, *model, logger)
+		logger.Info("LLM provider initialized",
+			"provider", "anthropic",
+			"model", *model)
 	default:
 		logger.Error("unknown LLM provider", "provider", *providerName,
-			"supported", []string{"ollama"})
+			"supported", []string{"ollama", "anthropic"})
 		os.Exit(1)
 	}
 
