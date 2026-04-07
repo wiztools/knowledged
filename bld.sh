@@ -24,6 +24,8 @@ case "$ACTION" in
     go build -o knowledged ./cmd/knowledged
     echo "Building kc..."
     go build -o kc ./cmd/kc
+    echo "Building mcp-knowledged..."
+    go build -o mcp-knowledged ./mcp
     echo "Done."
     ;;
   install)
@@ -31,6 +33,8 @@ case "$ACTION" in
     go install ./cmd/knowledged
     echo "Installing kc..."
     go install ./cmd/kc
+    echo "Installing mcp-knowledged..."
+    go install ./mcp
     echo "Done. Binaries installed to $(go env GOPATH)/bin"
     ;;
   *)
