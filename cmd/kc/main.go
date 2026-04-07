@@ -53,6 +53,8 @@ func main() {
 		runGet(server, args, logger)
 	case "job":
 		runJob(server, args, logger)
+	case "delete":
+		runDelete(server, args, logger)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		globalUsage()
@@ -218,6 +220,61 @@ Flags:`)
 	printJobResult(&job)
 }
 
+// ── delete ────────────────────────────────────────────────────────────────────
+
+func runDelete(server string, args []string, logger *slog.Logger) {
+	fs := flag.NewFlagSet("delete", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, `Usage: kc delete --path <repo-relative-path> [flags]
+
+Delete a file from the knowledge base. The file and its INDEX.md entry
+are removed in a single atomic git commit.
+
+Flags:`)
+		fs.PrintDefaults()
+	}
+
+	path := fs.String("path", "", "repo-relative file path to delete (e.g. tech/go/basics.md)")
+	wait := fs.Bool("wait", false, "poll until the job completes")
+	timeout := fs.Int("timeout", 120, "seconds to wait when --wait is set")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*path) == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	reqBody := map[string]string{"path": *path}
+
+	var resp struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := deleteJSON(server+"/content", reqBody, &resp); err != nil {
+		fatal(logger, "deleting content", err)
+	}
+	if resp.Error != "" {
+		fatal(logger, "server error", fmt.Errorf("%s", resp.Error))
+	}
+
+	logger.Info("delete job enqueued", "job_id", resp.JobID, "status", resp.Status)
+	fmt.Println(resp.JobID)
+
+	if !*wait {
+		return
+	}
+
+	logger.Info("waiting for delete job to complete", "job_id", resp.JobID, "timeout_s", *timeout)
+	job, err := pollJob(server, resp.JobID, time.Duration(*timeout)*time.Second, logger)
+	if err != nil {
+		fatal(logger, "polling job", err)
+	}
+	printJobResult(job)
+}
+
 // ── shared types & helpers ───────────────────────────────────────────────────
 
 type jobStatus struct {
@@ -374,6 +431,28 @@ func postJSON(endpoint string, body any, out any) error {
 	return nil
 }
 
+func deleteJSON(endpoint string, body any, out any) error {
+	var buf strings.Builder
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		return fmt.Errorf("encoding request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodDelete, endpoint, strings.NewReader(buf.String()))
+	if err != nil {
+		return fmt.Errorf("building DELETE request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("DELETE %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decoding response (HTTP %d): %w\nbody: %s", resp.StatusCode, err, string(raw))
+	}
+	return nil
+}
+
 func getJSON(endpoint string, out any) error {
 	raw, err := getRequest(endpoint)
 	if err != nil {
@@ -407,12 +486,13 @@ Usage:
   kc [--server URL] <command> [flags]
 
 Commands:
-  post   Store content in the knowledge base
-  get    Retrieve content from the knowledge base
-  job    Check the status of a store job
+  post     Store content in the knowledge base
+  get      Retrieve content from the knowledge base
+  delete   Delete a file from the knowledge base
+  job      Check the status of a job
 
 Global flags:
-  --server string   knowledged server URL (default "http://localhost:8080")
+  --server string   knowledged server URL (default "http://localhost:9090")
 
 Run 'kc <command> --help' for command-specific flags.
 
@@ -431,7 +511,10 @@ Examples:
   kc get --query "what do I know about Go concurrency?"
 
   # Find matching docs without synthesis
-  kc get --query "docker" --mode raw`)
+  kc get --query "docker" --mode raw
+
+  # Delete a file and wait for confirmation
+  kc delete --path tech/go/goroutines.md --wait`)
 }
 
 func fatal(logger *slog.Logger, msg string, err error) {
