@@ -35,7 +35,6 @@ type postContentRequest struct {
 type postContentResponse struct {
 	JobID  string `json:"job_id"`
 	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
 }
 
 type jobStatusResponse struct {
@@ -54,7 +53,6 @@ type synthesisResponse struct {
 	Query   string   `json:"query"`
 	Sources []string `json:"sources"`
 	Answer  string   `json:"answer"`
-	Error   string   `json:"error,omitempty"`
 }
 
 // ── methods ───────────────────────────────────────────────────────────────────
@@ -66,16 +64,13 @@ func (c *Client) PostContent(content, hint string, tags []string) (*postContentR
 	if err := c.postJSON("/content", body, &resp); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, fmt.Errorf("server error: %s", resp.Error)
-	}
 	return &resp, nil
 }
 
 // CheckJob returns the current status of a job by ID.
 func (c *Client) CheckJob(jobID string) (*jobStatusResponse, error) {
 	var resp jobStatusResponse
-	if err := c.getJSON("/jobs/"+jobID, &resp); err != nil {
+	if err := c.getJSON("/jobs/"+url.PathEscape(jobID), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -112,9 +107,6 @@ func (c *Client) GetSynthesis(query string) (*synthesisResponse, error) {
 	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
 		return nil, err
 	}
-	if resp.Error != "" {
-		return nil, fmt.Errorf("server error: %s", resp.Error)
-	}
 	return &resp, nil
 }
 
@@ -130,7 +122,10 @@ func (c *Client) postJSON(path string, body any, out any) error {
 		return fmt.Errorf("POST %s: %w", path, err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("reading response body from %s: %w", path, readErr)
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(raw))
 	}
@@ -146,7 +141,10 @@ func (c *Client) getJSON(path string, out any) error {
 		return fmt.Errorf("GET %s: %w", path, err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body from %s: %w", path, err)
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(raw))
 	}

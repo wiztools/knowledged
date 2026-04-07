@@ -112,7 +112,7 @@ func makePostContentHandler(c *Client) func(context.Context, mcp.CallToolRequest
 			if job.Status == "failed" {
 				return mcp.NewToolResultError(fmt.Sprintf("job %s failed: %s", job.JobID, job.Error)), nil
 			}
-			if time.Now().Add(interval).After(deadline) {
+			if time.Now().After(deadline) {
 				return mcp.NewToolResultError(fmt.Sprintf("timed out waiting for job %s (last status: %s)", resp.JobID, job.Status)), nil
 			}
 			time.Sleep(interval)
