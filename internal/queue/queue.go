@@ -29,16 +29,17 @@ const (
 // resultsTTL is how long a completed job stays queryable via GET /jobs/{id}.
 const resultsTTL = time.Hour
 
-// Job represents one unit of work: store a piece of content.
+// Job represents one unit of work: store or delete a piece of content.
 type Job struct {
 	ID          string     `json:"id"`
 	Status      Status     `json:"status"`
 	Timestamp   time.Time  `json:"ts"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"` // set when terminal; used for TTL eviction
-	Content     string     `json:"content"`
+	Operation   string     `json:"operation,omitempty"`    // "post" or "delete"; empty means "post" (backward compat)
+	Content     string     `json:"content,omitempty"`
 	Hint        string     `json:"hint,omitempty"`
 	Tags        []string   `json:"tags,omitempty"`
-	Path        string     `json:"path,omitempty"`  // set after successful store
+	Path        string     `json:"path,omitempty"`  // target path; set on enqueue for delete, after store for post
 	Error       string     `json:"error,omitempty"` // set on failure
 }
 
@@ -107,6 +108,40 @@ func (q *Queue) Enqueue(content, hint string, tags []string) (*Job, error) {
 	q.logger.Info("job enqueued", "job_id", job.ID)
 
 	// Non-blocking signal — the channel is buffered.
+	select {
+	case q.signal <- struct{}{}:
+	default:
+	}
+
+	return job, nil
+}
+
+// EnqueueDelete appends a new delete job to the persistent queue and signals
+// the worker. The file at path will be removed along with its INDEX.md entry.
+func (q *Queue) EnqueueDelete(path string) (*Job, error) {
+	job := &Job{
+		ID:        uuid.New().String(),
+		Status:    StatusQueued,
+		Timestamp: time.Now().UTC(),
+		Operation: "delete",
+		Path:      path,
+	}
+
+	q.mu.Lock()
+	jobs, err := q.loadJobs()
+	if err != nil {
+		q.mu.Unlock()
+		return nil, fmt.Errorf("loading queue: %w", err)
+	}
+	jobs = append(jobs, job)
+	if err := q.saveJobs(jobs); err != nil {
+		q.mu.Unlock()
+		return nil, fmt.Errorf("saving queue: %w", err)
+	}
+	q.mu.Unlock()
+
+	q.logger.Info("delete job enqueued", "job_id", job.ID, "path", path)
+
 	select {
 	case q.signal <- struct{}{}:
 	default:
@@ -219,10 +254,16 @@ func (q *Queue) nextQueued() *Job {
 	return nil
 }
 
-// processJob runs the organizer for a single job and updates its final status.
+// processJob dispatches to the appropriate handler based on job.Operation.
 func (q *Queue) processJob(ctx context.Context, job *Job) {
-	q.logger.Info("processing job", "job_id", job.ID)
+	q.logger.Info("processing job", "job_id", job.ID, "operation", job.Operation)
 
+	if job.Operation == "delete" {
+		q.executeDelete(ctx, job)
+		return
+	}
+
+	// Default: "post" or empty (backward compat with existing queue entries).
 	decision, err := q.organizer.Decide(ctx, job.Content, job.Hint, job.Tags)
 	if err != nil {
 		q.logger.Error("organizer decision failed", "job_id", job.ID, "error", err)
@@ -238,6 +279,38 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 
 	q.logger.Info("job completed successfully", "job_id", job.ID, "path", decision.TargetPath)
 	q.finalize(job, decision.TargetPath, nil)
+}
+
+// executeDelete removes a file and its INDEX.md entry as a single atomic git commit.
+func (q *Queue) executeDelete(ctx context.Context, job *Job) {
+	if !q.store.FileExists(job.Path) {
+		err := fmt.Errorf("file not found: %s", job.Path)
+		q.logger.Error("delete job failed — file does not exist", "job_id", job.ID, "path", job.Path)
+		q.finalize(job, "", err)
+		return
+	}
+
+	if err := q.store.DeleteFile(job.Path); err != nil {
+		q.logger.Error("DeleteFile failed", "job_id", job.ID, "path", job.Path, "error", err)
+		q.finalize(job, "", err)
+		return
+	}
+
+	if err := q.store.RemoveIndexEntry(job.Path); err != nil {
+		q.logger.Error("RemoveIndexEntry failed", "job_id", job.ID, "path", job.Path, "error", err)
+		q.finalize(job, "", err)
+		return
+	}
+
+	msg := fmt.Sprintf("delete(%s): %s", job.ID, job.Path)
+	if err := q.store.Commit(msg); err != nil {
+		q.logger.Error("commit failed after delete", "job_id", job.ID, "error", err)
+		q.finalize(job, "", err)
+		return
+	}
+
+	q.logger.Info("delete job completed", "job_id", job.ID, "path", job.Path)
+	q.finalize(job, job.Path, nil)
 }
 
 // finalize marks a job terminal and updates queue.json:
