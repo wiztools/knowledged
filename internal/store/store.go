@@ -233,6 +233,19 @@ func (s *Store) MoveFile(from, to string) error {
 	return nil
 }
 
+// DeleteFile removes a file from the repo, stages the removal, and returns an
+// error if the file does not exist.
+func (s *Store) DeleteFile(relPath string) error {
+	if !s.FileExists(relPath) {
+		return fmt.Errorf("file not found: %s", relPath)
+	}
+	if _, err := s.worktree.Remove(filepath.ToSlash(relPath)); err != nil {
+		return fmt.Errorf("removing %s from index: %w", relPath, err)
+	}
+	s.logger.Debug("deleted and staged removal", "path", relPath)
+	return nil
+}
+
 // Commit creates a Git commit with all currently staged changes.
 func (s *Store) Commit(message string) error {
 	hash, err := s.worktree.Commit(message, &git.CommitOptions{
