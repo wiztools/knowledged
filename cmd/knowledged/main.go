@@ -108,6 +108,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /content", h.PostContent)
+	mux.HandleFunc("DELETE /content", h.DeleteContent)
 	mux.HandleFunc("GET /content", h.GetContent)
 	mux.HandleFunc("GET /jobs/{id}", h.GetJob)
 

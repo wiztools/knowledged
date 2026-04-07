@@ -69,6 +69,41 @@ func (h *Handler) PostContent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── DELETE /content ──────────────────────────────────────────────────────────
+
+type deleteContentRequest struct {
+	Path string `json:"path"`
+}
+
+// DeleteContent enqueues a delete request and returns a job ID immediately.
+func (h *Handler) DeleteContent(w http.ResponseWriter, r *http.Request) {
+	var req deleteContentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		h.writeError(w, http.StatusBadRequest, "path must not be empty")
+		return
+	}
+
+	h.logger.Info("received DELETE /content request", "path", req.Path)
+
+	job, err := h.queue.EnqueueDelete(req.Path)
+	if err != nil {
+		h.logger.Error("failed to enqueue delete job", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "failed to enqueue: "+err.Error())
+		return
+	}
+
+	h.logger.Info("delete job enqueued", "job_id", job.ID, "path", req.Path)
+
+	h.writeJSON(w, http.StatusAccepted, postContentResponse{
+		JobID:  job.ID,
+		Status: string(job.Status),
+	})
+}
+
 // ── GET /jobs/{id} ───────────────────────────────────────────────────────────
 
 type jobStatusResponse struct {
