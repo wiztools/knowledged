@@ -27,14 +27,43 @@ All commands accept `--server` before the subcommand name to target a non-defaul
 
 ## Tips for agent usage
 
-- `kc post` is **async** — it returns a job ID immediately. Use `--wait` to block until the content is stored and get back the final path in one step.
-- When not using `--wait`, check completion with `kc job --id <id>` before referencing the stored path.
+- `kc post` and `kc delete` are **async** — both return a job ID immediately. Use `--wait` to block until the operation completes.
+- When not using `--wait`, check completion with `kc job --id <id>` before assuming the operation finished.
+- `kc delete` fails (job status `failed`) if the path does not exist in the repo.
 - `kc get --query` calls the LLM on the server side; it may take several seconds.
 - `kc get --mode raw` is faster and returns verbatim document content — prefer it when you only need to retrieve, not synthesize.
 - Content can be piped via stdin: `echo "..." | kc post`.
 - `sources:` lines from `kc get --query` are printed to stderr; only the synthesized answer goes to stdout — safe to capture with `$()` or redirect.
 
 ## Commands
+
+### delete — remove a file
+
+```sh
+kc delete --path <repo-relative-path> [--wait] [--timeout N]
+```
+
+| Flag | Description |
+|---|---|
+| `--path` | Repo-relative path of the file to delete (required) |
+| `--wait` | Block until the delete job completes (default: false) |
+| `--timeout` | Seconds to wait when `--wait` is set (default: 120) |
+
+Removes the file and its INDEX.md entry in a single atomic git commit.
+Returns HTTP 404 / job status `failed` if the file does not exist.
+
+Prints the **job ID** to stdout on success (or the final result table when `--wait`).
+
+```sh
+# Delete a file, fire-and-forget
+kc delete --path tech/go/goroutines.md
+
+# Delete and wait for confirmation
+kc delete --path lang/rust/ownership.md --wait
+
+# Explicit server
+kc --server http://10.0.0.5:9000 delete --path notes/old.md --wait
+```
 
 ### post — store content
 
