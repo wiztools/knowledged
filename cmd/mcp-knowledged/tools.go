@@ -12,7 +12,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// registerTools adds all three knowledged tools to the MCP server.
+// registerTools adds all knowledged tools to the MCP server.
 func registerTools(s *server.MCPServer, c *Client) {
 	// post_content
 	s.AddTool(
@@ -51,6 +51,21 @@ func registerTools(s *server.MCPServer, c *Client) {
 			),
 		),
 		makeGetContentHandler(c),
+	)
+
+	// delete_content
+	s.AddTool(
+		mcp.NewTool("delete_content",
+			mcp.WithDescription("Delete a file from the knowledged knowledge base. Removes the file and its INDEX.md entry in a single atomic git commit. Returns a job_id. Use wait=true to block until the job completes. Fails if the path does not exist."),
+			mcp.WithString("path",
+				mcp.Required(),
+				mcp.Description("Repo-relative file path to delete (e.g. 'tech/go/goroutines.md')"),
+			),
+			mcp.WithBoolean("wait",
+				mcp.Description("If true, poll until the job completes. Default: false."),
+			),
+		),
+		makeDeleteContentHandler(c),
 	)
 
 	// check_job
@@ -168,6 +183,45 @@ func makeGetContentHandler(c *Client) func(context.Context, mcp.CallToolRequest)
 		}
 		sb.WriteString(synth.Answer)
 		return mcp.NewToolResultText(sb.String()), nil
+	}
+}
+
+func makeDeleteContentHandler(c *Client) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		path, err := req.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError("missing required parameter: path"), nil
+		}
+		wait := req.GetBool("wait", false)
+
+		resp, err := c.DeleteContent(path)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("delete_content failed: %s", err)), nil
+		}
+
+		if !wait {
+			return mcp.NewToolResultText(fmt.Sprintf("job_id: %s\nstatus: %s", resp.JobID, resp.Status)), nil
+		}
+
+		// Poll until done or 120s timeout.
+		deadline := time.Now().Add(120 * time.Second)
+		interval := 2 * time.Second
+		for {
+			job, err := c.CheckJob(resp.JobID)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("polling job %s: %s", resp.JobID, err)), nil
+			}
+			if job.Status == "done" {
+				return mcp.NewToolResultText(fmt.Sprintf("job_id: %s\nstatus: done\npath: %s", job.JobID, job.Path)), nil
+			}
+			if job.Status == "failed" {
+				return mcp.NewToolResultError(fmt.Sprintf("job %s failed: %s", job.JobID, job.Error)), nil
+			}
+			if time.Now().After(deadline) {
+				return mcp.NewToolResultError(fmt.Sprintf("timed out waiting for job %s (last status: %s)", resp.JobID, job.Status)), nil
+			}
+			time.Sleep(interval)
+		}
 	}
 }
 

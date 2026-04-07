@@ -57,6 +57,20 @@ type synthesisResponse struct {
 
 // ── methods ───────────────────────────────────────────────────────────────────
 
+type deleteContentRequest struct {
+	Path string `json:"path"`
+}
+
+// DeleteContent enqueues a delete job and returns the job ID and initial status.
+func (c *Client) DeleteContent(path string) (*postContentResponse, error) {
+	body := deleteContentRequest{Path: path}
+	var resp postContentResponse
+	if err := c.deleteJSON("/content", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // PostContent enqueues a store job and returns the job ID and initial status.
 func (c *Client) PostContent(content, hint string, tags []string) (*postContentResponse, error) {
 	body := postContentRequest{Content: content, Hint: hint, Tags: tags}
@@ -120,6 +134,34 @@ func (c *Client) postJSON(path string, body any, out any) error {
 	resp, err := httpClient.Post(c.base+path, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("reading response body from %s: %w", path, readErr)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(raw))
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decoding response (HTTP %d): %w\nbody: %s", resp.StatusCode, err, string(raw))
+	}
+	return nil
+}
+
+func (c *Client) deleteJSON(path string, body any, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encoding request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodDelete, c.base+path, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("building DELETE request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("DELETE %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 	raw, readErr := io.ReadAll(resp.Body)
