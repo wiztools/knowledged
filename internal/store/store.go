@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -305,7 +306,8 @@ func (s *Store) HasOriginRemote() (bool, error) {
 }
 
 // PushOriginCurrentBranch pushes the currently checked-out branch to origin.
-// If no origin remote is configured, it is a no-op.
+// If no origin remote is configured, it is a no-op. It tries go-git first and
+// falls back to the git CLI so normal Git auth helpers can still be used.
 func (s *Store) PushOriginCurrentBranch() error {
 	hasOrigin, err := s.HasOriginRemote()
 	if err != nil {
@@ -327,7 +329,16 @@ func (s *Store) PushOriginCurrentBranch() error {
 	if err := s.repo.Push(&git.PushOptions{
 		RemoteName: "origin",
 		RefSpecs:   []config.RefSpec{refSpec},
-	}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+	}); err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return nil
+	}
+
+	out, err := exec.Command("git", "-C", s.repoPath, "push", "--porcelain", "origin", head.Name().Short()).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("pushing branch %s to origin: %s", head.Name().Short(), msg)
+		}
 		return fmt.Errorf("pushing branch %s to origin: %w", head.Name().Short(), err)
 	}
 
