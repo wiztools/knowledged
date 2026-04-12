@@ -7,7 +7,7 @@ You write content in; the LLM decides where it belongs, keeps the folder structu
 ## How it works
 
 ```
-POST /content ──► queue.json (durable) ──► worker
+POST /content ──► .knowledged/queue.json (durable) ──► worker
                                                │
                                     LLM: where does this go?
                                     refactor if needed
@@ -15,6 +15,8 @@ POST /content ──► queue.json (durable) ──► worker
                                                │
                                          git commit
                                     (job ID in message)
+
+startup / timer ──► .knowledged/origin-push.json ──► push origin/<current-branch> when due
 
 GET /content ──► LLM: which docs match?
                  read files
@@ -77,7 +79,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | Exists, is a Git repo | Opened as-is |
 | Exists, not empty, not a Git repo | **Error** |
 
-On first init the server creates `.gitignore` (excludes `queue.json`) and an empty `INDEX.md`, then makes an initial commit.
+On first init the server creates `.gitignore` (excludes `/.knowledged/`) and an empty `INDEX.md`, then makes an initial commit.
 
 ### Server flags
 
@@ -88,6 +90,7 @@ On first init the server creates `.gitignore` (excludes `queue.json`) and an emp
 | `--model` | `mistral-small3.1` / `claude-sonnet-4-6` | Model name (default depends on provider) |
 | `--ollama-url` | `http://localhost:11434` | Ollama server URL (Ollama provider only) |
 | `--port` | `9090` | HTTP listen port |
+| `--push-origin-every` | `0` | If greater than zero, push the current branch to `origin` on that cadence using persisted state in `.knowledged/` |
 
 **Environment variables:**
 
@@ -197,9 +200,11 @@ kc --server http://10.0.0.5:9000 post --content "..."
 
 ```
 <knowledge-repo>/
-├── .gitignore       # contains: queue.json
+├── .gitignore       # contains: /.knowledged/
+├── .knowledged/
+│   ├── origin-push.json   # last attempted origin push time
+│   └── queue.json         # live job queue (unversioned)
 ├── INDEX.md         # auto-maintained index of all documents
-├── queue.json       # live job queue (unversioned)
 └── <topic>/
     └── <subtopic>/
         └── file.md  # organized by the LLM, max 3 levels deep

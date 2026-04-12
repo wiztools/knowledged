@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -21,6 +22,9 @@ type Store struct {
 	worktree *git.Worktree
 	logger   *slog.Logger
 }
+
+const stateDirName = ".knowledged"
+const rootedStateDirPattern = "/" + stateDirName + "/"
 
 // New opens or initializes the Git repository at repoPath.
 //
@@ -100,7 +104,11 @@ func initRepo(repoPath string, logger *slog.Logger) (*Store, error) {
 func (s *Store) bootstrap() error {
 	s.logger.Info("bootstrapping knowledge repository")
 
-	gitignore := "queue.json\n"
+	if err := s.ensureStateDir(); err != nil {
+		return err
+	}
+
+	gitignore := rootedStateDirPattern + "\n"
 	if err := os.WriteFile(filepath.Join(s.repoPath, ".gitignore"), []byte(gitignore), 0o644); err != nil {
 		return fmt.Errorf("writing .gitignore: %w", err)
 	}
@@ -134,16 +142,37 @@ func (s *Store) bootstrap() error {
 func (s *Store) ensureBootstrapped() error {
 	needsCommit := false
 
+	if err := s.ensureStateDir(); err != nil {
+		return err
+	}
+
 	gitignorePath := filepath.Join(s.repoPath, ".gitignore")
 	if _, err := os.Stat(gitignorePath); errors.Is(err, os.ErrNotExist) {
 		s.logger.Info("no .gitignore found — creating one", "path", gitignorePath)
-		if err := os.WriteFile(gitignorePath, []byte("queue.json\n"), 0o644); err != nil {
+		if err := os.WriteFile(gitignorePath, []byte(rootedStateDirPattern+"\n"), 0o644); err != nil {
 			return fmt.Errorf("writing .gitignore: %w", err)
 		}
 		if _, err := s.worktree.Add(".gitignore"); err != nil {
 			return fmt.Errorf("staging .gitignore: %w", err)
 		}
 		needsCommit = true
+	} else if err != nil {
+		return fmt.Errorf("stat .gitignore: %w", err)
+	} else {
+		content, err := os.ReadFile(gitignorePath)
+		if err != nil {
+			return fmt.Errorf("reading .gitignore: %w", err)
+		}
+		if !strings.Contains(string(content), rootedStateDirPattern) {
+			updated := strings.TrimRight(string(content), "\n") + "\n" + rootedStateDirPattern + "\n"
+			if err := os.WriteFile(gitignorePath, []byte(updated), 0o644); err != nil {
+				return fmt.Errorf("updating .gitignore: %w", err)
+			}
+			if _, err := s.worktree.Add(".gitignore"); err != nil {
+				return fmt.Errorf("staging .gitignore: %w", err)
+			}
+			needsCommit = true
+		}
 	}
 
 	indexPath := filepath.Join(s.repoPath, "INDEX.md")
@@ -173,6 +202,12 @@ func (s *Store) ensureBootstrapped() error {
 
 // RepoPath returns the absolute root path of the repository.
 func (s *Store) RepoPath() string { return s.repoPath }
+
+// StatePath returns the absolute path for an operational state file stored
+// under the repo-local hidden state directory.
+func (s *Store) StatePath(name string) string {
+	return filepath.Join(s.repoPath, stateDirName, name)
+}
 
 // WriteFile writes content to a path relative to the repo root and stages it.
 // Parent directories are created automatically.
@@ -258,6 +293,47 @@ func (s *Store) Commit(message string) error {
 	return nil
 }
 
+// HasOriginRemote reports whether the repository has an origin remote.
+func (s *Store) HasOriginRemote() (bool, error) {
+	if _, err := s.repo.Remote("origin"); err != nil {
+		if errors.Is(err, git.ErrRemoteNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("looking up origin remote: %w", err)
+	}
+	return true, nil
+}
+
+// PushOriginCurrentBranch pushes the currently checked-out branch to origin.
+// If no origin remote is configured, it is a no-op.
+func (s *Store) PushOriginCurrentBranch() error {
+	hasOrigin, err := s.HasOriginRemote()
+	if err != nil {
+		return err
+	}
+	if !hasOrigin {
+		return nil
+	}
+
+	head, err := s.repo.Head()
+	if err != nil {
+		return fmt.Errorf("resolving HEAD: %w", err)
+	}
+	if !head.Name().IsBranch() {
+		return fmt.Errorf("HEAD is not on a branch: %s", head.Name())
+	}
+
+	refSpec := config.RefSpec(head.Name().String() + ":" + head.Name().String())
+	if err := s.repo.Push(&git.PushOptions{
+		RemoteName: "origin",
+		RefSpecs:   []config.RefSpec{refSpec},
+	}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return fmt.Errorf("pushing branch %s to origin: %w", head.Name().Short(), err)
+	}
+
+	return nil
+}
+
 // FindCommitByJobID searches recent git history for a commit whose message
 // contains jobID. Used for crash-recovery reconciliation.
 func (s *Store) FindCommitByJobID(jobID string) (bool, error) {
@@ -289,4 +365,11 @@ func signature() *object.Signature {
 		Email: "knowledged@local",
 		When:  time.Now(),
 	}
+}
+
+func (s *Store) ensureStateDir() error {
+	if err := os.MkdirAll(filepath.Join(s.repoPath, stateDirName), 0o755); err != nil {
+		return fmt.Errorf("creating %s directory: %w", stateDirName, err)
+	}
+	return nil
 }

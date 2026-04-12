@@ -9,7 +9,7 @@
 └────────┬──────────────┬──────────────────────────────────┘
          │              │
     write to         read-only
-    queue.json       (concurrent ok)
+    .knowledged/     (concurrent ok)
          │              │
          ▼              ▼
 ┌────────────────┐  ┌──────────────────────────────────────┐
@@ -45,7 +45,7 @@
 | `cmd/knowledged` | CLI flags, wires all components, starts HTTP server and queue worker |
 | `cmd/kc` | CLI client — `post`, `get`, `job` subcommands; handles async polling |
 | `internal/api` | HTTP handlers; routes GET/POST to queue or query engine |
-| `internal/queue` | Durable job queue backed by `queue.json`; single worker goroutine |
+| `internal/queue` | Durable job queue backed by `.knowledged/queue.json`; single worker goroutine |
 | `internal/organizer` | Constructs LLM prompts, parses decisions, drives store operations |
 | `internal/store` | go-git wrapper; file I/O, staging, committing, git log scan |
 | `internal/llm` | `Provider` interface + Ollama implementation |
@@ -58,13 +58,13 @@
 HTTP handler
   │
   ├─ validate request body (content must be non-empty)
-  ├─ append job (status=queued) to queue.json   ← mutex protected
+  ├─ append job (status=queued) to .knowledged/queue.json   ← mutex protected
   ├─ send non-blocking signal on worker channel
   └─ return HTTP 202 { job_id, status: "queued" }
 
 Worker goroutine (wakes on signal)
   │
-  ├─ nextQueued(): read queue.json, find oldest queued job,
+  ├─ nextQueued(): read .knowledged/queue.json, find oldest queued job,
   │                mark it status=processing, rewrite file  ← mutex
   │
   ├─ Organizer.Decide()
@@ -81,7 +81,7 @@ Worker goroutine (wakes on signal)
   │                         ▲
   │                 job ID embedded — used for crash recovery
   │
-  └─ finalize(): mark job done/failed in queue.json, cache in results map
+  └─ finalize(): mark job done/failed in .knowledged/queue.json, cache in results map
 ```
 
 ---
@@ -113,9 +113,9 @@ Read operations do not acquire any lock — they access the filesystem directly 
 
 ### Durability contract
 
-- Every job is written to `queue.json` before `POST /content` returns — no job is silently lost on crash.
-- `queue.json` is rewritten atomically: write to `queue.json.tmp`, then `os.Rename`. On POSIX this is a single syscall; the file is never in a partially-written state.
-- `queue.json` is excluded from Git via `.gitignore` — it is operational state, not knowledge content.
+- Every job is written to `.knowledged/queue.json` before `POST /content` returns — no job is silently lost on crash.
+- `.knowledged/queue.json` is rewritten atomically: write to `.knowledged/queue.json.tmp`, then `os.Rename`. On POSIX this is a single syscall; the file is never in a partially-written state.
+- `/.knowledged/` is excluded from Git via `.gitignore` — it contains operational state, not knowledge content.
 
 ### Job status transitions
 
@@ -128,7 +128,7 @@ The transition `queued → processing` is written to disk before any work begins
 
 ### Startup reconciliation (`queue.reconcile`)
 
-On every server start, the queue scans `queue.json` and resolves any non-terminal states:
+On every server start, the queue scans `.knowledged/queue.json` and resolves any non-terminal states:
 
 ```
 done / failed   → load into in-memory results map, leave in file
@@ -154,7 +154,7 @@ The git commit message `store(<jobID>): <path>` is the ground truth. It is writt
 | Exists, non-empty, not a Git repo | Return error — refuse to touch it |
 
 **Bootstrap** creates two files and makes the initial commit:
-- `.gitignore` — contains `/kc` and `/knowledged` (root binaries) plus `queue.json`
+- `.gitignore` — contains `/kc` and `/knowledged` (root binaries) plus `/.knowledged/`
 - `INDEX.md` — empty scaffold with auto-management comment
 
 **`ensureBootstrapped`** (for pre-existing repos) checks each file individually and only commits if something was missing, leaving existing content untouched.
@@ -239,7 +239,7 @@ HTTP goroutines (one per request)
     │
     ├── GET requests  → read filesystem directly, no locking
     │
-    └── POST requests → acquire queue mutex → write queue.json → release
+    └── POST requests → acquire queue mutex → write .knowledged/queue.json → release
                         signal worker channel (non-blocking)
 
 Queue worker (single goroutine)
@@ -247,7 +247,7 @@ Queue worker (single goroutine)
         no concurrent git writes possible
 ```
 
-The single worker goroutine is the sole writer to the Git repository. GET handlers read files directly from the filesystem without coordination. The only shared lock is `queue.mu`, which protects `queue.json` reads and writes between the HTTP goroutines and the worker.
+The single worker goroutine is the sole writer to the Git repository. GET handlers read files directly from the filesystem without coordination. The only shared lock is `queue.mu`, which protects `.knowledged/queue.json` reads and writes between the HTTP goroutines and the worker.
 
 ---
 
@@ -255,9 +255,11 @@ The single worker goroutine is the sole writer to the Git repository. GET handle
 
 ```
 <repo>/
-├── .gitignore          queue.json (and root binaries)
+├── .gitignore          ignores /.knowledged/ (and root binaries)
+├── .knowledged/
+│   ├── origin-push.json
+│   └── queue.json
 ├── INDEX.md            auto-maintained; one entry per file
-├── queue.json          live job queue — unversioned
 └── <topic>/
     └── <subtopic>/
         └── title.md    max 3 levels deep, kebab-case

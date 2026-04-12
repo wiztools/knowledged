@@ -115,7 +115,7 @@ If the server restarts mid-job, recovery is automatic. On startup the server sca
 
 **Don't:**
 - Directly edit files inside the `--repo` directory. All writes must go through the server so they are committed and the index is updated.
-- Delete or modify `queue.json` while the server is running.
+- Delete or modify files under `.knowledged/` while the server is running.
 - Assume a fire-and-forget `post` has completed — check with `kc job`.
 
 ## Connecting to a non-default server

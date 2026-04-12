@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -29,6 +28,8 @@ const (
 // resultsTTL is how long a completed job stays queryable via GET /jobs/{id}.
 const resultsTTL = time.Hour
 
+const originPushStateFile = "origin-push.json"
+
 // Job represents one unit of work: store or delete a piece of content.
 type Job struct {
 	ID          string     `json:"id"`
@@ -46,7 +47,7 @@ type Job struct {
 // Queue is a file-backed, single-worker job queue.
 //
 // Durability contract:
-//   - Every job is appended to queue.json (unversioned) before the HTTP
+//   - Every job is appended to .knowledged/queue.json (unversioned) before the HTTP
 //     handler returns, so no job is silently lost on crash.
 //   - The single worker goroutine marks a job "processing" before it starts
 //     work and "done" / "failed" after it finishes.
@@ -54,26 +55,50 @@ type Job struct {
 //     git log: if the commit already exists the job is marked done; otherwise
 //     it is reset to "queued" and retried.
 type Queue struct {
-	path      string // absolute path to queue.json
+	path      string // absolute path to .knowledged/queue.json
 	mu        sync.Mutex
 	signal    chan struct{}
 	results   map[string]*Job // in-memory copy of completed jobs for fast GET /jobs lookups
 	resultsMu sync.RWMutex
 
-	store     *store.Store
-	organizer *organizer.Organizer
-	logger    *slog.Logger
+	store           *store.Store
+	organizer       *organizer.Organizer
+	logger          *slog.Logger
+	pushOriginEvery time.Duration
+	pushStatePath   string
+	newTimer        func(time.Duration) queueTicker
+}
+
+type queueTicker interface {
+	C() <-chan time.Time
+	Stop() bool
+	Reset(time.Duration) bool
+}
+
+type timeTimer struct {
+	*time.Timer
+}
+
+func (t *timeTimer) C() <-chan time.Time { return t.Timer.C }
+
+type originPushState struct {
+	LastAttemptAt time.Time `json:"last_attempt_at"`
 }
 
 // New creates a Queue, runs startup reconciliation, and returns.
-func New(st *store.Store, org *organizer.Organizer, logger *slog.Logger) (*Queue, error) {
+func New(st *store.Store, org *organizer.Organizer, logger *slog.Logger, pushOriginEvery time.Duration) (*Queue, error) {
 	q := &Queue{
-		path:      filepath.Join(st.RepoPath(), "queue.json"),
-		signal:    make(chan struct{}, 256),
-		results:   make(map[string]*Job),
-		store:     st,
-		organizer: org,
-		logger:    logger,
+		path:            st.StatePath("queue.json"),
+		signal:          make(chan struct{}, 256),
+		results:         make(map[string]*Job),
+		store:           st,
+		organizer:       org,
+		logger:          logger,
+		pushOriginEvery: pushOriginEvery,
+		pushStatePath:   st.StatePath(originPushStateFile),
+		newTimer: func(d time.Duration) queueTicker {
+			return &timeTimer{Timer: time.NewTimer(d)}
+		},
 	}
 	if err := q.reconcile(); err != nil {
 		return nil, fmt.Errorf("queue reconciliation failed: %w", err)
@@ -180,11 +205,32 @@ func (q *Queue) GetJob(id string) (*Job, bool) {
 func (q *Queue) Start(ctx context.Context) {
 	q.logger.Info("queue worker started")
 	go q.evictExpiredResults(ctx)
+
+	var pushTimer queueTicker
+	if q.pushOriginEvery > 0 {
+		delay, err := q.nextPushDelay(time.Now().UTC())
+		if err != nil {
+			q.logger.Error("failed to load persisted origin push schedule", "error", err)
+			delay = 0
+		}
+		pushTimer = q.newTimer(delay)
+		defer pushTimer.Stop()
+		q.logger.Info("periodic git push enabled", "interval", q.pushOriginEvery)
+	}
+
+	var pushCh <-chan time.Time
+	if pushTimer != nil {
+		pushCh = pushTimer.C()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			q.logger.Info("queue worker stopped")
 			return
+		case <-pushCh:
+			q.runScheduledPush()
+			pushTimer.Reset(q.pushOriginEvery)
 		case <-q.signal:
 			q.drainQueue(ctx)
 		}
@@ -226,6 +272,78 @@ func (q *Queue) drainQueue(ctx context.Context) {
 			return
 		}
 		q.processJob(ctx, job)
+	}
+}
+
+func (q *Queue) nextPushDelay(now time.Time) (time.Duration, error) {
+	lastAttempt, ok, err := q.readLastOriginPushAttempt()
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, nil
+	}
+	nextAt := lastAttempt.Add(q.pushOriginEvery)
+	if !nextAt.After(now) {
+		return 0, nil
+	}
+	return nextAt.Sub(now), nil
+}
+
+func (q *Queue) readLastOriginPushAttempt() (time.Time, bool, error) {
+	data, err := os.ReadFile(q.pushStatePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("reading push state: %w", err)
+	}
+
+	var state originPushState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return time.Time{}, false, fmt.Errorf("parsing push state: %w", err)
+	}
+	if state.LastAttemptAt.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return state.LastAttemptAt, true, nil
+}
+
+func (q *Queue) writeLastOriginPushAttempt(at time.Time) error {
+	data, err := json.MarshalIndent(originPushState{LastAttemptAt: at}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling push state: %w", err)
+	}
+	tmp := q.pushStatePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("writing temp push state: %w", err)
+	}
+	if err := os.Rename(tmp, q.pushStatePath); err != nil {
+		return fmt.Errorf("renaming push state: %w", err)
+	}
+	return nil
+}
+
+func (q *Queue) runScheduledPush() {
+	hasOrigin, err := q.store.HasOriginRemote()
+	if err != nil {
+		q.logger.Error("failed to check origin remote before scheduled push", "error", err)
+		return
+	}
+	if !hasOrigin {
+		return
+	}
+
+	attemptedAt := time.Now().UTC()
+	if err := q.writeLastOriginPushAttempt(attemptedAt); err != nil {
+		q.logger.Error("failed to persist origin push state", "error", err)
+	}
+	q.pushOriginCurrentBranch()
+}
+
+func (q *Queue) pushOriginCurrentBranch() {
+	if err := q.store.PushOriginCurrentBranch(); err != nil {
+		q.logger.Error("periodic git push failed", "error", err)
 	}
 }
 
@@ -313,9 +431,9 @@ func (q *Queue) executeDelete(ctx context.Context, job *Job) {
 	q.finalize(job, job.Path, nil)
 }
 
-// finalize marks a job terminal and updates queue.json:
-//   - done  → removed from queue.json (no retry needed)
-//   - failed → kept in queue.json so the next server startup retries it
+// finalize marks a job terminal and updates .knowledged/queue.json:
+//   - done  → removed from the file (no retry needed)
+//   - failed → kept in the file so the next server startup retries it
 //
 // Either way the job is cached in the results map for GET /jobs/{id} lookups
 // within the TTL window.
@@ -339,17 +457,17 @@ func (q *Queue) finalize(job *Job, path string, execErr error) {
 				j.Error = execErr.Error()
 				j.CompletedAt = &now
 				*job = *j
-				// Keep in queue.json — will be retried on next server start.
+				// Keep in .knowledged/queue.json — will be retried on next server start.
 				active = append(active, j)
-				q.logger.Debug("keeping failed job in queue.json for retry on restart",
+				q.logger.Debug("keeping failed job in .knowledged/queue.json for retry on restart",
 					"job_id", j.ID, "error", execErr.Error())
 			} else {
 				j.Status = StatusDone
 				j.Path = path
 				j.CompletedAt = &now
 				*job = *j
-				// Done — remove from queue.json.
-				q.logger.Debug("removing completed job from queue.json", "job_id", j.ID)
+				// Done — remove from .knowledged/queue.json.
+				q.logger.Debug("removing completed job from .knowledged/queue.json", "job_id", j.ID)
 			}
 			continue
 		}
@@ -384,21 +502,21 @@ func (q *Queue) reconcile() error {
 		return fmt.Errorf("loading queue file: %w", err)
 	}
 	if len(jobs) == 0 {
-		q.logger.Info("no queue file found — starting fresh")
+		q.logEmptyQueueState()
 		return nil
 	}
 
 	q.logger.Info("reconciling queue on startup", "total_jobs", len(jobs))
 
 	now := time.Now().UTC()
-	var active []*Job // only non-terminal jobs go back into queue.json
+	var active []*Job // only non-terminal jobs go back into .knowledged/queue.json
 
 	for _, job := range jobs {
 		switch job.Status {
 		case StatusDone:
 			// Completed successfully — load into results map and prune from file.
 			q.results[job.ID] = job
-			q.logger.Debug("pruning completed job from queue.json on startup",
+			q.logger.Debug("pruning completed job from .knowledged/queue.json on startup",
 				"job_id", job.ID)
 
 		case StatusFailed:
@@ -460,7 +578,26 @@ func (q *Queue) reconcile() error {
 	return nil
 }
 
-// loadJobs reads queue.json. A missing file is treated as an empty queue.
+func (q *Queue) logEmptyQueueState() {
+	info, err := os.Stat(q.path)
+	if errors.Is(err, os.ErrNotExist) {
+		q.logger.Info("no queue state file found — starting fresh")
+		return
+	}
+	if err != nil {
+		q.logger.Warn("could not inspect queue state file after loading zero jobs",
+			"path", q.path, "error", err)
+		q.logger.Info("no pending jobs found in queue state — starting fresh")
+		return
+	}
+	if info.Size() == 0 {
+		q.logger.Info("queue state file is empty — starting fresh", "path", q.path)
+		return
+	}
+	q.logger.Info("no pending jobs found in queue state — starting fresh", "path", q.path)
+}
+
+// loadJobs reads .knowledged/queue.json. A missing file is treated as an empty queue.
 func (q *Queue) loadJobs() ([]*Job, error) {
 	data, err := os.ReadFile(q.path)
 	if err != nil {
@@ -474,12 +611,12 @@ func (q *Queue) loadJobs() ([]*Job, error) {
 	}
 	var jobs []*Job
 	if err := json.Unmarshal(data, &jobs); err != nil {
-		return nil, fmt.Errorf("parsing queue.json: %w", err)
+		return nil, fmt.Errorf("parsing .knowledged/queue.json: %w", err)
 	}
 	return jobs, nil
 }
 
-// saveJobs atomically rewrites queue.json.
+// saveJobs atomically rewrites .knowledged/queue.json.
 func (q *Queue) saveJobs(jobs []*Job) error {
 	data, err := json.MarshalIndent(jobs, "", "  ")
 	if err != nil {

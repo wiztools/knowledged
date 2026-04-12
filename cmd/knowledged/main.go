@@ -25,6 +25,7 @@ func main() {
 	model := flag.String("model", "mistral-small3.1", "LLM model name")
 	port := flag.String("port", "9090", "HTTP listen port")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
+	pushOriginEvery := flag.Duration("push-origin-every", 0, "if greater than zero, periodically push the current branch to origin from the single git worker (for example: 24h)")
 	flag.Parse()
 
 	// ── Logger ────────────────────────────────────────────────────────────────
@@ -45,6 +46,7 @@ func main() {
 		"llm_provider", *providerName,
 		"model", *model,
 		"port", *port,
+		"push_origin_every", *pushOriginEvery,
 	)
 
 	// ── Store (Git backend) ───────────────────────────────────────────────────
@@ -91,7 +93,7 @@ func main() {
 
 	// ── Queue ─────────────────────────────────────────────────────────────────
 	logger.Info("initializing job queue")
-	q, err := queue.New(st, org, logger)
+	q, err := queue.New(st, org, logger, *pushOriginEvery)
 	if err != nil {
 		logger.Error("failed to initialize queue", "error", err)
 		os.Exit(1)
