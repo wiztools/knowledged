@@ -22,7 +22,7 @@ func newTestQueue(t *testing.T) (*Queue, *store.Store) {
 		t.Fatalf("store.New: %v", err)
 	}
 	// organizer is nil — worker is never started in these tests.
-	q, err := New(st, nil, logger, 0)
+	q, err := New(st, nil, nil, logger, 0)
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestPushOriginCurrentBranch_LogsErrorOnFailure(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	q, err := New(st, nil, logger, 24*time.Hour)
+	q, err := New(st, nil, nil, logger, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestLogEmptyQueueState_Messages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("store.New: %v", err)
 			}
-			q, err := New(st, nil, logger, 0)
+			q, err := New(st, nil, nil, logger, 0)
 			if err != nil {
 				t.Fatalf("queue.New: %v", err)
 			}

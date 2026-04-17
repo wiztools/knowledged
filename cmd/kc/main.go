@@ -6,9 +6,10 @@
 //
 // Commands:
 //
-//	post   Store content in the knowledge base
-//	get    Retrieve content from the knowledge base
-//	job    Check the status of a store job
+//	post    Store content in the knowledge base
+//	get     Retrieve content from the knowledge base
+//	job     Check the status of a store job
+//	recent  List the 20 most recently stored documents
 package main
 
 import (
@@ -55,6 +56,8 @@ func main() {
 		runJob(server, args, logger)
 	case "delete":
 		runDelete(server, args, logger)
+	case "recent":
+		runRecent(server, logger)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		globalUsage()
@@ -275,6 +278,52 @@ Flags:`)
 	printJobResult(job)
 }
 
+// ── recent ────────────────────────────────────────────────────────────────────
+
+type recentEntry struct {
+	JobID     string   `json:"job_id"`
+	Path      string   `json:"path"`
+	Tags      []string `json:"tags"`
+	CreatedAt string   `json:"created_at"`
+}
+
+func runRecent(server string, logger *slog.Logger) {
+	var resp struct {
+		Posts []recentEntry `json:"posts"`
+		Error string        `json:"error"`
+	}
+	if err := getJSON(server+"/posts/recents", &resp); err != nil {
+		fatal(logger, "GET /posts/recents", err)
+	}
+	if resp.Error != "" {
+		fatal(logger, "server error", fmt.Errorf("%s", resp.Error))
+	}
+	if len(resp.Posts) == 0 {
+		fmt.Println("no posts yet")
+		return
+	}
+	printRecentPosts(resp.Posts)
+}
+
+func printRecentPosts(posts []recentEntry) {
+	for i, p := range posts {
+		if i > 0 {
+			fmt.Println(strings.Repeat("─", 60))
+		}
+		t, err := time.Parse(time.RFC3339Nano, p.CreatedAt)
+		createdAt := p.CreatedAt
+		if err == nil {
+			createdAt = t.UTC().Format("2006-01-02 15:04:05 UTC")
+		}
+		fmt.Printf("%-11s: %s\n", "path", p.Path)
+		if len(p.Tags) > 0 {
+			fmt.Printf("%-11s: %s\n", "tags", strings.Join(p.Tags, ", "))
+		}
+		fmt.Printf("%-11s: %s\n", "created_at", createdAt)
+		fmt.Printf("%-11s: %s\n", "job_id", p.JobID)
+	}
+}
+
 // ── shared types & helpers ───────────────────────────────────────────────────
 
 type jobStatus struct {
@@ -490,6 +539,7 @@ Commands:
   get      Retrieve content from the knowledge base
   delete   Delete a file from the knowledge base
   job      Check the status of a job
+  recent   List the 20 most recently stored documents
 
 Global flags:
   --server string   knowledged server URL (default "http://localhost:9090")
@@ -514,7 +564,10 @@ Examples:
   kc get --query "docker" --mode raw
 
   # Delete a file and wait for confirmation
-  kc delete --path tech/go/goroutines.md --wait`)
+  kc delete --path tech/go/goroutines.md --wait
+
+  # List the 20 most recently stored documents
+  kc recent`)
 }
 
 func fatal(logger *slog.Logger, msg string, err error) {

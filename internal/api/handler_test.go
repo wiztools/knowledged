@@ -21,11 +21,11 @@ func newTestHandler(t *testing.T) (*Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	q, err := queue.New(st, nil, logger, 0)
+	q, err := queue.New(st, nil, nil, logger, 0)
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
-	h := NewHandler(q, st, nil, logger)
+	h := NewHandler(q, st, nil, nil, logger)
 	return h, st
 }
 

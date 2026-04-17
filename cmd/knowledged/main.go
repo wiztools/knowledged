@@ -16,6 +16,7 @@ import (
 	"github.com/wiztools/knowledged/internal/llm"
 	"github.com/wiztools/knowledged/internal/organizer"
 	"github.com/wiztools/knowledged/internal/queue"
+	"github.com/wiztools/knowledged/internal/recentlog"
 	"github.com/wiztools/knowledged/internal/store"
 )
 
@@ -91,9 +92,13 @@ func main() {
 	org := organizer.New(st, provider, logger)
 	logger.Info("organizer initialized")
 
+	// ── Recent-posts log ──────────────────────────────────────────────────────
+	rl := recentlog.New(st.StatePath("recent-posts.jsonl"), logger)
+	logger.Info("recent-posts log initialized", "path", st.StatePath("recent-posts.jsonl"))
+
 	// ── Queue ─────────────────────────────────────────────────────────────────
 	logger.Info("initializing job queue")
-	q, err := queue.New(st, org, logger, *pushOriginEvery)
+	q, err := queue.New(st, org, rl, logger, *pushOriginEvery)
 	if err != nil {
 		logger.Error("failed to initialize queue", "error", err)
 		os.Exit(1)
@@ -106,13 +111,14 @@ func main() {
 	go q.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	h := api.NewHandler(q, st, provider, logger)
+	h := api.NewHandler(q, st, provider, rl, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /content", h.PostContent)
 	mux.HandleFunc("DELETE /content", h.DeleteContent)
 	mux.HandleFunc("GET /content", h.GetContent)
 	mux.HandleFunc("GET /jobs/{id}", h.GetJob)
+	mux.HandleFunc("GET /posts/recents", h.GetRecentPosts)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", *port),

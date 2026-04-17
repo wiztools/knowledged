@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wiztools/knowledged/internal/organizer"
+	"github.com/wiztools/knowledged/internal/recentlog"
 	"github.com/wiztools/knowledged/internal/store"
 )
 
@@ -63,6 +64,7 @@ type Queue struct {
 
 	store           *store.Store
 	organizer       *organizer.Organizer
+	recentLog       *recentlog.RecentLog
 	logger          *slog.Logger
 	pushOriginEvery time.Duration
 	pushStatePath   string
@@ -86,13 +88,14 @@ type originPushState struct {
 }
 
 // New creates a Queue, runs startup reconciliation, and returns.
-func New(st *store.Store, org *organizer.Organizer, logger *slog.Logger, pushOriginEvery time.Duration) (*Queue, error) {
+func New(st *store.Store, org *organizer.Organizer, rl *recentlog.RecentLog, logger *slog.Logger, pushOriginEvery time.Duration) (*Queue, error) {
 	q := &Queue{
 		path:            st.StatePath("queue.json"),
 		signal:          make(chan struct{}, 256),
 		results:         make(map[string]*Job),
 		store:           st,
 		organizer:       org,
+		recentLog:       rl,
 		logger:          logger,
 		pushOriginEvery: pushOriginEvery,
 		pushStatePath:   st.StatePath(originPushStateFile),
@@ -397,6 +400,18 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 
 	q.logger.Info("job completed successfully", "job_id", job.ID, "path", decision.TargetPath)
 	q.finalize(job, decision.TargetPath, nil)
+
+	if q.recentLog != nil {
+		e := recentlog.Entry{
+			JobID:     job.ID,
+			Path:      decision.TargetPath,
+			Tags:      job.Tags,
+			CreatedAt: job.Timestamp,
+		}
+		if err := q.recentLog.Append(e); err != nil {
+			q.logger.Warn("recentlog: append failed", "job_id", job.ID, "error", err)
+		}
+	}
 }
 
 // executeDelete removes a file and its INDEX.md entry as a single atomic git commit.

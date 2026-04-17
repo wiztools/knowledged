@@ -10,20 +10,22 @@ import (
 
 	"github.com/wiztools/knowledged/internal/llm"
 	"github.com/wiztools/knowledged/internal/queue"
+	"github.com/wiztools/knowledged/internal/recentlog"
 	"github.com/wiztools/knowledged/internal/store"
 )
 
 // Handler holds the dependencies shared across HTTP endpoints.
 type Handler struct {
-	queue  *queue.Queue
-	store  *store.Store
-	llm    llm.Provider
-	logger *slog.Logger
+	queue     *queue.Queue
+	store     *store.Store
+	llm       llm.Provider
+	recentLog *recentlog.RecentLog
+	logger    *slog.Logger
 }
 
 // NewHandler creates a Handler.
-func NewHandler(q *queue.Queue, st *store.Store, provider llm.Provider, logger *slog.Logger) *Handler {
-	return &Handler{queue: q, store: st, llm: provider, logger: logger}
+func NewHandler(q *queue.Queue, st *store.Store, provider llm.Provider, rl *recentlog.RecentLog, logger *slog.Logger) *Handler {
+	return &Handler{queue: q, store: st, llm: provider, recentLog: rl, logger: logger}
 }
 
 // ── POST /content ────────────────────────────────────────────────────────────
@@ -267,6 +269,28 @@ contain enough information, say so clearly.`
 		Sources: readPaths,
 		Answer:  answer,
 	})
+}
+
+// ── GET /posts/recents ─────────────────────────────────────────────────────────
+
+type recentPostsResponse struct {
+	Posts []recentlog.Entry `json:"posts"`
+}
+
+// GetRecentPosts returns the 20 most recently stored documents, newest first.
+func (h *Handler) GetRecentPosts(w http.ResponseWriter, r *http.Request) {
+	h.logger.Info("GET /posts/recents")
+
+	entries, err := h.recentLog.Recent(20)
+	if err != nil {
+		h.logger.Error("recentlog read failed", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "failed to read recent posts: "+err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []recentlog.Entry{}
+	}
+	h.writeJSON(w, http.StatusOK, recentPostsResponse{Posts: entries})
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
