@@ -22,10 +22,11 @@ import (
 
 func main() {
 	repoPath := flag.String("repo", "", "path to the knowledge Git repository (required)")
-	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic)")
+	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic, jan)")
 	model := flag.String("model", "mistral-small3.1", "LLM model name")
 	port := flag.String("port", "9090", "HTTP listen port")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
+	janURL := flag.String("jan-url", "http://localhost:8080", "Jan server base URL")
 	pushOriginEvery := flag.Duration("push-origin-every", 0, "if greater than zero, periodically push the current branch to origin from the single git worker (for example: 24h)")
 	flag.Parse()
 
@@ -82,9 +83,18 @@ func main() {
 		logger.Info("LLM provider initialized",
 			"provider", "anthropic",
 			"model", *model)
+	case "jan":
+		if *model == "mistral-small3.1" {
+			*model = "Jan-v3.5-4B-Q4_K_XL"
+		}
+		provider = llm.NewJan(*janURL, *model, logger)
+		logger.Info("LLM provider initialized",
+			"provider", "jan",
+			"url", *janURL,
+			"model", *model)
 	default:
 		logger.Error("unknown LLM provider", "provider", *providerName,
-			"supported", []string{"ollama", "anthropic"})
+			"supported", []string{"ollama", "anthropic", "jan"})
 		os.Exit(1)
 	}
 
