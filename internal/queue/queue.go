@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,7 @@ type Job struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"` // set when terminal; used for TTL eviction
 	Operation   string     `json:"operation,omitempty"`    // "post" or "delete"; empty means "post" (backward compat)
 	Content     string     `json:"content,omitempty"`
+	ContentHash string     `json:"content_hash,omitempty"` // SHA-256 of Content; used for deduplication
 	Hint        string     `json:"hint,omitempty"`
 	Tags        []string   `json:"tags,omitempty"`
 	Path        string     `json:"path,omitempty"`  // target path; set on enqueue for delete, after store for post
@@ -109,22 +112,42 @@ func New(st *store.Store, org *organizer.Organizer, rl *recentlog.RecentLog, log
 	return q, nil
 }
 
+// contentHash returns the hex-encoded SHA-256 hash of the given content string.
+func contentHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
 // Enqueue appends a new job to the persistent queue and signals the worker.
+// If a job with the same content is already queued or processing, the existing
+// job is returned without creating a duplicate.
 func (q *Queue) Enqueue(content, hint string, tags []string) (*Job, error) {
-	job := &Job{
-		ID:        uuid.New().String(),
-		Status:    StatusQueued,
-		Timestamp: time.Now().UTC(),
-		Content:   content,
-		Hint:      hint,
-		Tags:      tags,
-	}
+	hash := contentHash(content)
 
 	q.mu.Lock()
 	jobs, err := q.loadJobs()
 	if err != nil {
 		q.mu.Unlock()
 		return nil, fmt.Errorf("loading queue: %w", err)
+	}
+
+	for _, j := range jobs {
+		if j.ContentHash == hash && (j.Status == StatusQueued || j.Status == StatusProcessing) {
+			q.mu.Unlock()
+			q.logger.Info("duplicate content detected — returning existing job",
+				"existing_job_id", j.ID, "content_hash", hash)
+			return j, nil
+		}
+	}
+
+	job := &Job{
+		ID:          uuid.New().String(),
+		Status:      StatusQueued,
+		Timestamp:   time.Now().UTC(),
+		Content:     content,
+		ContentHash: hash,
+		Hint:        hint,
+		Tags:        tags,
 	}
 	jobs = append(jobs, job)
 	if err := q.saveJobs(jobs); err != nil {

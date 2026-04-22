@@ -29,6 +29,81 @@ func newTestQueue(t *testing.T) (*Queue, *store.Store) {
 	return q, st
 }
 
+func TestEnqueue_DeduplicatesActiveJobs(t *testing.T) {
+	q, _ := newTestQueue(t)
+
+	content := "some knowledge content"
+	first, err := q.Enqueue(content, "hint", []string{"tag"})
+	if err != nil {
+		t.Fatalf("first Enqueue: %v", err)
+	}
+
+	second, err := q.Enqueue(content, "hint", []string{"tag"})
+	if err != nil {
+		t.Fatalf("second Enqueue: %v", err)
+	}
+
+	if first.ID != second.ID {
+		t.Errorf("expected duplicate enqueue to return same job ID %q, got %q", first.ID, second.ID)
+	}
+
+	jobs, err := q.loadJobs()
+	if err != nil {
+		t.Fatalf("loadJobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Errorf("expected 1 job in queue after duplicate enqueue, got %d", len(jobs))
+	}
+}
+
+func TestEnqueue_AllowsRepostAfterCompletion(t *testing.T) {
+	q, _ := newTestQueue(t)
+
+	content := "some knowledge content"
+	first, err := q.Enqueue(content, "hint", nil)
+	if err != nil {
+		t.Fatalf("first Enqueue: %v", err)
+	}
+
+	// Simulate job completing: remove from queue, cache as done.
+	q.mu.Lock()
+	if err := q.saveJobs(nil); err != nil {
+		q.mu.Unlock()
+		t.Fatalf("saveJobs: %v", err)
+	}
+	q.mu.Unlock()
+	now := time.Now().UTC()
+	first.Status = StatusDone
+	first.CompletedAt = &now
+	q.resultsMu.Lock()
+	q.results[first.ID] = first
+	q.resultsMu.Unlock()
+
+	second, err := q.Enqueue(content, "hint", nil)
+	if err != nil {
+		t.Fatalf("second Enqueue after completion: %v", err)
+	}
+
+	if second.ID == first.ID {
+		t.Error("expected a new job ID after the original job completed, got the same ID")
+	}
+}
+
+func TestEnqueue_ContentHashSet(t *testing.T) {
+	q, _ := newTestQueue(t)
+
+	job, err := q.Enqueue("hello world", "", nil)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if job.ContentHash == "" {
+		t.Error("expected ContentHash to be set on enqueued job")
+	}
+	if job.ContentHash != contentHash("hello world") {
+		t.Errorf("ContentHash mismatch: got %q", job.ContentHash)
+	}
+}
+
 func TestEnqueueDelete_JobFields(t *testing.T) {
 	q, _ := newTestQueue(t)
 
