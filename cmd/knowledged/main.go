@@ -23,7 +23,7 @@ import (
 func main() {
 	repoPath := flag.String("repo", "", "path to the knowledge Git repository (required)")
 	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic, jan)")
-	model := flag.String("model", "mistral-small3.1", "LLM model name")
+	model := flag.String("model", "", "LLM model name (defaults to provider-specific default when unset)")
 	port := flag.String("port", "9090", "HTTP listen port")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
 	janURL := flag.String("jan-url", "http://localhost:8080", "Jan server base URL")
@@ -43,14 +43,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("starting knowledged",
-		"repo", *repoPath,
-		"llm_provider", *providerName,
-		"model", *model,
-		"port", *port,
-		"push_origin_every", *pushOriginEvery,
-	)
-
 	// ── Store (Git backend) ───────────────────────────────────────────────────
 	logger.Info("initializing knowledge store", "path", *repoPath)
 	st, err := store.New(*repoPath, logger)
@@ -64,6 +56,9 @@ func main() {
 	var provider llm.Provider
 	switch *providerName {
 	case "ollama":
+		if *model == "" {
+			*model = "mistral-small3.1"
+		}
 		provider = llm.NewOllama(*ollamaURL, *model, logger)
 		logger.Info("LLM provider initialized",
 			"provider", "ollama",
@@ -75,8 +70,7 @@ func main() {
 			logger.Error("ANTHROPIC_API_KEY environment variable is not set")
 			os.Exit(1)
 		}
-		// Default to claude-3-5-haiku if the user didn't override the model flag.
-		if *model == "mistral-small3.1" {
+		if *model == "" {
 			*model = "claude-sonnet-4-6"
 		}
 		provider = llm.NewAnthropic(apiKey, *model, logger)
@@ -84,19 +78,35 @@ func main() {
 			"provider", "anthropic",
 			"model", *model)
 	case "jan":
-		if *model == "mistral-small3.1" {
-			*model = "Jan-v3.5-4B-Q4_K_XL"
-		}
+		// Jan uses whatever model is currently loaded in the server; the model
+		// field in the request is ignored by Jan's OpenAI-compatible endpoint.
 		provider = llm.NewJan(*janURL, *model, logger)
+		modelDisplay := *model
+		if modelDisplay == "" {
+			modelDisplay = "<server-configured>"
+		}
 		logger.Info("LLM provider initialized",
 			"provider", "jan",
 			"url", *janURL,
-			"model", *model)
+			"model", modelDisplay)
 	default:
 		logger.Error("unknown LLM provider", "provider", *providerName,
 			"supported", []string{"ollama", "anthropic", "jan"})
 		os.Exit(1)
 	}
+
+	logger.Info("starting knowledged",
+		"repo", *repoPath,
+		"llm_provider", *providerName,
+		"model", func() string {
+			if *providerName == "jan" && *model == "" {
+				return "<server-configured>"
+			}
+			return *model
+		}(),
+		"port", *port,
+		"push_origin_every", *pushOriginEvery,
+	)
 
 	// ── Organizer ─────────────────────────────────────────────────────────────
 	org := organizer.New(st, provider, logger)

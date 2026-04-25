@@ -17,7 +17,7 @@ type janMessage struct {
 }
 
 type janChatRequest struct {
-	Model    string       `json:"model"`
+	Model    string       `json:"model,omitempty"`
 	Messages []janMessage `json:"messages"`
 }
 
@@ -64,7 +64,11 @@ func (j *Jan) Complete(ctx context.Context, system, user string) (string, error)
 	}
 
 	url := j.baseURL + "/v1/chat/completions"
-	j.logger.Debug("sending request to Jan", "url", url, "model", j.model)
+	modelDisplay := j.model
+	if modelDisplay == "" {
+		modelDisplay = "<server-configured>"
+	}
+	j.logger.Debug("sending request to Jan", "url", url, "model", modelDisplay)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {

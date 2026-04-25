@@ -306,8 +306,9 @@ func (s *Store) HasOriginRemote() (bool, error) {
 }
 
 // PushOriginCurrentBranch pushes the currently checked-out branch to origin.
-// If no origin remote is configured, it is a no-op. It tries go-git first and
-// falls back to the git CLI so normal Git auth helpers can still be used.
+// If no origin remote is configured, it is a no-op. It tries go-git first for
+// HTTPS remotes and falls back to the git CLI (which uses system SSH auth
+// helpers) for SSH remotes or when go-git fails.
 func (s *Store) PushOriginCurrentBranch() error {
 	hasOrigin, err := s.HasOriginRemote()
 	if err != nil {
@@ -325,21 +326,32 @@ func (s *Store) PushOriginCurrentBranch() error {
 		return fmt.Errorf("HEAD is not on a branch: %s", head.Name())
 	}
 
-	refSpec := config.RefSpec(head.Name().String() + ":" + head.Name().String())
-	if err := s.repo.Push(&git.PushOptions{
-		RemoteName: "origin",
-		RefSpecs:   []config.RefSpec{refSpec},
-	}); err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return nil
+	remote, err := s.repo.Remote("origin")
+	if err != nil {
+		return fmt.Errorf("looking up origin remote: %w", err)
+	}
+	urls := remote.Config().URLs
+	isSSH := len(urls) > 0 && !strings.HasPrefix(urls[0], "http://") && !strings.HasPrefix(urls[0], "https://")
+
+	if !isSSH {
+		refSpec := config.RefSpec(head.Name().String() + ":" + head.Name().String())
+		if err := s.repo.Push(&git.PushOptions{
+			RemoteName: "origin",
+			RefSpecs:   []config.RefSpec{refSpec},
+		}); err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return nil
+		} else {
+			s.logger.Debug("go-git push failed, falling back to git CLI", "error", err)
+		}
 	}
 
-	out, err := exec.Command("git", "-C", s.repoPath, "push", "--porcelain", "origin", head.Name().Short()).CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
+	out, execErr := exec.Command("git", "-C", s.repoPath, "push", "--porcelain", "origin", head.Name().Short()).CombinedOutput()
+	if execErr != nil {
+		msg := strings.ReplaceAll(strings.TrimSpace(string(out)), "\r\n", "\n")
 		if msg != "" {
 			return fmt.Errorf("pushing branch %s to origin: %s", head.Name().Short(), msg)
 		}
-		return fmt.Errorf("pushing branch %s to origin: %w", head.Name().Short(), err)
+		return fmt.Errorf("pushing branch %s to origin: %w", head.Name().Short(), execErr)
 	}
 
 	return nil
