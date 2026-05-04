@@ -20,6 +20,10 @@ type ollamaChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	// Format is the structured-output schema. Ollama 0.5+ accepts a JSON
+	// Schema object here and constrains generation to match it. Omitted
+	// (zero value → omitempty drops it) for free-form Complete calls.
+	Format map[string]any `json:"format,omitempty"`
 }
 
 type ollamaChatResponse struct {
@@ -48,6 +52,20 @@ func NewOllama(baseURL, model string, logger *slog.Logger) *Ollama {
 }
 
 func (o *Ollama) Complete(ctx context.Context, system, user string) (string, error) {
+	return o.chat(ctx, system, user, nil)
+}
+
+// CompleteStructured asks Ollama to constrain its reply to schema.Schema by
+// passing it through the chat API's `format` field. The returned string is
+// the JSON content of the assistant message.
+func (o *Ollama) CompleteStructured(ctx context.Context, system, user string, schema Schema) (string, error) {
+	if schema.Schema == nil {
+		return "", fmt.Errorf("ollama: structured call requires a non-nil Schema.Schema")
+	}
+	return o.chat(ctx, system, user, schema.Schema)
+}
+
+func (o *Ollama) chat(ctx context.Context, system, user string, format map[string]any) (string, error) {
 	req := ollamaChatRequest{
 		Model: o.model,
 		Messages: []ollamaMessage{
@@ -55,6 +73,7 @@ func (o *Ollama) Complete(ctx context.Context, system, user string) (string, err
 			{Role: "user", Content: user},
 		},
 		Stream: false,
+		Format: format,
 	}
 
 	body, err := json.Marshal(req)
@@ -63,7 +82,8 @@ func (o *Ollama) Complete(ctx context.Context, system, user string) (string, err
 	}
 
 	url := o.baseURL + "/api/chat"
-	o.logger.Debug("sending request to Ollama", "url", url, "model", o.model)
+	o.logger.Debug("sending request to Ollama",
+		"url", url, "model", o.model, "structured", format != nil)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {

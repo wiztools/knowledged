@@ -17,8 +17,23 @@ type janMessage struct {
 }
 
 type janChatRequest struct {
-	Model    string       `json:"model,omitempty"`
-	Messages []janMessage `json:"messages"`
+	Model          string             `json:"model,omitempty"`
+	Messages       []janMessage       `json:"messages"`
+	ResponseFormat *janResponseFormat `json:"response_format,omitempty"`
+}
+
+// janResponseFormat targets the OpenAI-compatible json_schema response mode.
+// Jan, vLLM, and llama.cpp's server all accept this shape.
+type janResponseFormat struct {
+	Type       string        `json:"type"` // "json_schema"
+	JSONSchema janJSONSchema `json:"json_schema"`
+}
+
+type janJSONSchema struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Schema      map[string]any `json:"schema"`
+	Strict      bool           `json:"strict,omitempty"`
 }
 
 type janChatResponse struct {
@@ -50,12 +65,39 @@ func NewJan(baseURL, model string, logger *slog.Logger) *Jan {
 }
 
 func (j *Jan) Complete(ctx context.Context, system, user string) (string, error) {
+	return j.chat(ctx, system, user, nil)
+}
+
+// CompleteStructured constrains the reply to schema.Schema via the OpenAI-
+// compatible response_format = json_schema mechanism. The returned string is
+// the JSON content of the assistant message.
+func (j *Jan) CompleteStructured(ctx context.Context, system, user string, schema Schema) (string, error) {
+	if schema.Schema == nil {
+		return "", fmt.Errorf("jan: structured call requires a non-nil Schema.Schema")
+	}
+	if schema.Name == "" {
+		return "", fmt.Errorf("jan: structured call requires a Schema.Name")
+	}
+	rf := &janResponseFormat{
+		Type: "json_schema",
+		JSONSchema: janJSONSchema{
+			Name:        schema.Name,
+			Description: schema.Description,
+			Schema:      schema.Schema,
+			Strict:      true,
+		},
+	}
+	return j.chat(ctx, system, user, rf)
+}
+
+func (j *Jan) chat(ctx context.Context, system, user string, rf *janResponseFormat) (string, error) {
 	req := janChatRequest{
 		Model: j.model,
 		Messages: []janMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
+		ResponseFormat: rf,
 	}
 
 	body, err := json.Marshal(req)
@@ -68,7 +110,8 @@ func (j *Jan) Complete(ctx context.Context, system, user string) (string, error)
 	if modelDisplay == "" {
 		modelDisplay = "<server-configured>"
 	}
-	j.logger.Debug("sending request to Jan", "url", url, "model", modelDisplay)
+	j.logger.Debug("sending request to Jan",
+		"url", url, "model", modelDisplay, "structured", rf != nil)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
