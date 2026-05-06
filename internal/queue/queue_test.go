@@ -2,6 +2,7 @@ package queue
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"strings"
@@ -140,6 +141,101 @@ func TestEnqueueDelete_Retrievable(t *testing.T) {
 	}
 	if got.Operation != "delete" {
 		t.Errorf("expected Operation %q after GetJob, got %q", "delete", got.Operation)
+	}
+}
+
+func TestEnqueueEdit_JobFields(t *testing.T) {
+	q, _ := newTestQueue(t)
+
+	job, err := q.EnqueueEdit("tech/go/goroutines.md", "updated", "Goroutines", "runtime notes")
+	if err != nil {
+		t.Fatalf("EnqueueEdit: %v", err)
+	}
+
+	if job.Operation != "edit" {
+		t.Errorf("expected Operation %q, got %q", "edit", job.Operation)
+	}
+	if job.Path != "tech/go/goroutines.md" {
+		t.Errorf("expected Path %q, got %q", "tech/go/goroutines.md", job.Path)
+	}
+	if job.Content != "updated" {
+		t.Errorf("expected Content to be set, got %q", job.Content)
+	}
+	if job.Title != "Goroutines" || job.Description != "runtime notes" {
+		t.Errorf("expected index metadata fields to be set, got title=%q description=%q", job.Title, job.Description)
+	}
+	if job.ContentHash == "" {
+		t.Error("expected ContentHash to be set")
+	}
+}
+
+func TestExecuteEdit_UpdatesFileIndexAndCommit(t *testing.T) {
+	q, st := newTestQueue(t)
+
+	if err := st.WriteFile("tech/go/goroutines.md", "old content"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	index := `# Index
+
+<!-- Auto-managed by knowledged. Do not edit manually. -->
+
+- [Go Goroutines](tech/go/goroutines.md) — concurrency primitives
+`
+	if err := st.WriteIndex(index); err != nil {
+		t.Fatalf("WriteIndex: %v", err)
+	}
+	if err := st.Commit("seed"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	job, err := q.EnqueueEdit("tech/go/goroutines.md", "new content", "Go Scheduler", "updated runtime notes")
+	if err != nil {
+		t.Fatalf("EnqueueEdit: %v", err)
+	}
+
+	q.executeEdit(context.Background(), job)
+
+	if job.Status != StatusDone {
+		t.Fatalf("expected edit job done, got %s: %s", job.Status, job.Error)
+	}
+	got, err := st.ReadFile("tech/go/goroutines.md")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got != "new content" {
+		t.Fatalf("expected edited content, got %q", got)
+	}
+	gotIndex, err := st.ReadIndex()
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	if !strings.Contains(gotIndex, "- [Go Scheduler](tech/go/goroutines.md) — updated runtime notes") {
+		t.Fatalf("expected updated index entry, got:\n%s", gotIndex)
+	}
+	found, err := st.FindCommitByJobID(job.ID)
+	if err != nil {
+		t.Fatalf("FindCommitByJobID: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected git commit containing job id %s", job.ID)
+	}
+}
+
+func TestExecuteEdit_MissingFileFails(t *testing.T) {
+	q, _ := newTestQueue(t)
+
+	job, err := q.EnqueueEdit("missing/file.md", "new content", "", "")
+	if err != nil {
+		t.Fatalf("EnqueueEdit: %v", err)
+	}
+
+	q.executeEdit(context.Background(), job)
+
+	if job.Status != StatusFailed {
+		t.Fatalf("expected edit job failed, got %s", job.Status)
+	}
+	if !strings.Contains(job.Error, "file not found") {
+		t.Fatalf("expected file not found error, got %q", job.Error)
 	}
 }
 

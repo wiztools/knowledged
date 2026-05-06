@@ -30,7 +30,7 @@ Every write is a real Git commit. Crash recovery works by scanning the commit lo
 | Binary | Purpose |
 |---|---|
 | `knowledged` | HTTP server — stores content, serves queries |
-| `kc` | CLI client — `post`, `get`, `job` subcommands |
+| `kc` | CLI client — `post`, `get`, `edit`, `delete`, `job` subcommands |
 
 ## Requirements
 
@@ -149,6 +149,35 @@ kc get --query "docker setup" --mode raw
 
 Synthesis: the answer goes to stdout; source file paths go to stderr — safe to capture with `$()`.
 
+### `kc edit` — edit existing content
+
+Content is read from `--content`, `--file`, or stdin (in that priority order).
+The edit is asynchronous and committed through the same queue as posts and
+deletes.
+
+```sh
+# Replace a document from a file and wait for the commit
+kc edit --path tech/go/goroutines.md --file updated.md --wait
+
+# Replace content inline and update the INDEX.md entry metadata
+kc edit \
+  --path tech/go/goroutines.md \
+  --content "Updated notes..." \
+  --title "Goroutines" \
+  --description "Updated runtime concurrency notes" \
+  --wait
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--path` | | Repo-relative Markdown file path to edit |
+| `--content` | | Replacement content string |
+| `--file` | | Read replacement content from this file |
+| `--title` | | Optional replacement title for the `INDEX.md` entry |
+| `--description` | | Optional replacement description for the `INDEX.md` entry |
+| `--wait` | false | Block until job completes |
+| `--timeout` | 120 | Seconds to wait (with `--wait`) |
+
 ### `kc job` — check job status
 
 ```sh
@@ -176,6 +205,21 @@ kc --server http://10.0.0.5:9000 post --content "..."
 ```json
 // Request
 { "content": "...", "hint": "optional", "tags": ["optional"] }
+
+// Response 202
+{ "job_id": "uuid", "status": "queued" }
+```
+
+### `PUT /content`
+
+```json
+// Request
+{
+  "path": "tech/go/goroutines.md",
+  "content": "...replacement Markdown...",
+  "title": "optional INDEX title",
+  "description": "optional INDEX description"
+}
 
 // Response 202
 { "job_id": "uuid", "status": "queued" }

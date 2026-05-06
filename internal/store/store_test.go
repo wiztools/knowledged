@@ -60,6 +60,31 @@ func TestDeleteFile_NotExist(t *testing.T) {
 	}
 }
 
+func TestCleanContentPathRejectsTraversal(t *testing.T) {
+	bad := []string{
+		"../outside.md",
+		"/tmp/outside.md",
+		".knowledged/queue.json",
+		"notes/plain.txt",
+	}
+	for _, path := range bad {
+		if _, err := CleanContentPath(path); err == nil {
+			t.Fatalf("expected %q to be rejected", path)
+		}
+	}
+}
+
+func TestWriteFileRejectsTraversal(t *testing.T) {
+	st := newTestStore(t)
+
+	if err := st.WriteFile("../outside.md", "escape"); err == nil {
+		t.Fatal("expected traversal path to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(st.RepoPath(), "..", "outside.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected outside file not to be created, stat err: %v", err)
+	}
+}
+
 func TestPushOriginCurrentBranch(t *testing.T) {
 	st := newTestStore(t)
 

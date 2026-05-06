@@ -1,6 +1,6 @@
 ---
 name: knowledged
-description: Store and retrieve knowledge using the knowledged server via the kc CLI — post content to a Git-backed knowledge base, retrieve raw documents, query with LLM synthesis, and check async job status.
+description: Store, edit, delete, and retrieve knowledge using the knowledged server via the kc CLI — post content to a Git-backed knowledge base, retrieve raw documents, query with LLM synthesis, and check async job status.
 ---
 
 # knowledged (`kc`)
@@ -27,9 +27,10 @@ All commands accept `--server` before the subcommand name to target a non-defaul
 
 ## Tips for agent usage
 
-- `kc post` and `kc delete` are **async** — both return a job ID immediately. Use `--wait` to block until the operation completes.
+- `kc post`, `kc edit`, and `kc delete` are **async** — all return a job ID immediately. Use `--wait` to block until the operation completes.
 - When not using `--wait`, check completion with `kc job --id <id>` before assuming the operation finished.
 - `kc delete` fails (job status `failed`) if the path does not exist in the repo.
+- `kc edit` fails (job status `failed`) if the path does not exist in the repo.
 - `kc get --query` calls the LLM on the server side; it may take several seconds.
 - `kc get --mode raw` is faster and returns verbatim document content — prefer it when you only need to retrieve, not synthesize.
 - Content can be piped via stdin: `echo "..." | kc post`.
@@ -96,6 +97,36 @@ cat notes.md | kc post --tags "meeting,q3"
 
 # Explicit server
 kc --server http://10.0.0.5:9000 post --content "..." --wait
+```
+
+### edit — replace a file
+
+```sh
+kc edit --path <repo-relative-path> [--content TEXT] [--file PATH] [--title TEXT] [--description TEXT] [--wait] [--timeout N]
+```
+
+| Flag | Description |
+|---|---|
+| `--path` | Repo-relative path of the Markdown file to edit (required) |
+| `--content` | Replacement content string |
+| `--file` | Read replacement content from a file |
+| `--title` | Optional replacement title for the INDEX.md entry |
+| `--description` | Optional replacement description for the INDEX.md entry |
+| `--wait` | Block until the edit job completes (default: false) |
+| `--timeout` | Seconds to wait when `--wait` is set (default: 120) |
+
+Content source priority: `--content` > `--file` > stdin.
+
+```sh
+# Replace content and wait for the commit
+kc edit --path tech/go/goroutines.md --file updated.md --wait
+
+# Replace content and update index metadata
+kc edit --path tech/go/goroutines.md \
+  --content "Updated notes..." \
+  --title "Goroutines" \
+  --description "Updated runtime concurrency notes" \
+  --wait
 ```
 
 ### get — retrieve content
@@ -186,7 +217,7 @@ kc post --file research.md --hint "distributed systems" --wait
 <job-id>
 ```
 
-**`kc post --wait` / `kc job`**
+**`kc post --wait` / `kc edit --wait` / `kc delete --wait` / `kc job`**
 ```
 job_id : <uuid>
 status : done | failed

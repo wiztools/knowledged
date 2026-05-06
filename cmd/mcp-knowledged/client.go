@@ -32,6 +32,13 @@ type postContentRequest struct {
 	Tags    []string `json:"tags,omitempty"`
 }
 
+type editContentRequest struct {
+	Path        string `json:"path"`
+	Content     string `json:"content"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 type postContentResponse struct {
 	JobID  string `json:"job_id"`
 	Status string `json:"status"`
@@ -76,6 +83,16 @@ func (c *Client) PostContent(content, hint string, tags []string) (*postContentR
 	body := postContentRequest{Content: content, Hint: hint, Tags: tags}
 	var resp postContentResponse
 	if err := c.postJSON("/content", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// EditContent enqueues an edit job and returns the job ID and initial status.
+func (c *Client) EditContent(path, content, title, description string) (*postContentResponse, error) {
+	body := editContentRequest{Path: path, Content: content, Title: title, Description: description}
+	var resp postContentResponse
+	if err := c.putJSON("/content", body, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -162,6 +179,34 @@ func (c *Client) deleteJSON(path string, body any, out any) error {
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("DELETE %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("reading response body from %s: %w", path, readErr)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(raw))
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decoding response (HTTP %d): %w\nbody: %s", resp.StatusCode, err, string(raw))
+	}
+	return nil
+}
+
+func (c *Client) putJSON(path string, body any, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encoding request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, c.base+path, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("building PUT request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 	raw, readErr := io.ReadAll(resp.Body)

@@ -27,6 +27,32 @@ type Store struct {
 const stateDirName = ".knowledged"
 const rootedStateDirPattern = "/" + stateDirName + "/"
 
+// CleanContentPath validates a user-supplied repository-relative Markdown path
+// and returns it in slash-separated form.
+func CleanContentPath(relPath string) (string, error) {
+	p := strings.TrimSpace(filepath.ToSlash(relPath))
+	if p == "" {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("path must be repo-relative: %s", relPath)
+	}
+	clean := filepath.ToSlash(filepath.Clean(p))
+	if clean == "." || clean == "" {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
+		return "", fmt.Errorf("path must stay within the repository: %s", relPath)
+	}
+	if clean == stateDirName || strings.HasPrefix(clean, stateDirName+"/") {
+		return "", fmt.Errorf("path must not target %s", stateDirName)
+	}
+	if clean != indexFile && !strings.HasSuffix(strings.ToLower(clean), ".md") {
+		return "", fmt.Errorf("path must be a Markdown file: %s", relPath)
+	}
+	return clean, nil
+}
+
 // New opens or initializes the Git repository at repoPath.
 //
 //   - If repoPath does not exist    → create directory + git init
@@ -213,72 +239,96 @@ func (s *Store) StatePath(name string) string {
 // WriteFile writes content to a path relative to the repo root and stages it.
 // Parent directories are created automatically.
 func (s *Store) WriteFile(relPath, content string) error {
-	absPath := filepath.Join(s.repoPath, filepath.FromSlash(relPath))
+	cleanPath, err := CleanContentPath(relPath)
+	if err != nil {
+		return err
+	}
+	absPath := filepath.Join(s.repoPath, filepath.FromSlash(cleanPath))
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-		return fmt.Errorf("creating directories for %s: %w", relPath, err)
+		return fmt.Errorf("creating directories for %s: %w", cleanPath, err)
 	}
 	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("writing file %s: %w", relPath, err)
+		return fmt.Errorf("writing file %s: %w", cleanPath, err)
 	}
-	if _, err := s.worktree.Add(filepath.ToSlash(relPath)); err != nil {
-		return fmt.Errorf("staging %s: %w", relPath, err)
+	if _, err := s.worktree.Add(cleanPath); err != nil {
+		return fmt.Errorf("staging %s: %w", cleanPath, err)
 	}
-	s.logger.Debug("wrote and staged file", "path", relPath, "bytes", len(content))
+	s.logger.Debug("wrote and staged file", "path", cleanPath, "bytes", len(content))
 	return nil
 }
 
 // ReadFile reads a file at a path relative to the repo root.
 func (s *Store) ReadFile(relPath string) (string, error) {
-	absPath := filepath.Join(s.repoPath, filepath.FromSlash(relPath))
+	cleanPath, err := CleanContentPath(relPath)
+	if err != nil {
+		return "", err
+	}
+	absPath := filepath.Join(s.repoPath, filepath.FromSlash(cleanPath))
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", relPath, err)
+		return "", fmt.Errorf("reading %s: %w", cleanPath, err)
 	}
 	return string(data), nil
 }
 
 // FileExists reports whether a file exists at the given repo-relative path.
 func (s *Store) FileExists(relPath string) bool {
-	_, err := os.Stat(filepath.Join(s.repoPath, filepath.FromSlash(relPath)))
+	cleanPath, err := CleanContentPath(relPath)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(s.repoPath, filepath.FromSlash(cleanPath)))
 	return err == nil
 }
 
 // MoveFile moves a file within the repo and stages both the addition and removal.
 func (s *Store) MoveFile(from, to string) error {
-	absFrom := filepath.Join(s.repoPath, filepath.FromSlash(from))
-	absTo := filepath.Join(s.repoPath, filepath.FromSlash(to))
+	cleanFrom, err := CleanContentPath(from)
+	if err != nil {
+		return err
+	}
+	cleanTo, err := CleanContentPath(to)
+	if err != nil {
+		return err
+	}
+	absFrom := filepath.Join(s.repoPath, filepath.FromSlash(cleanFrom))
+	absTo := filepath.Join(s.repoPath, filepath.FromSlash(cleanTo))
 
 	content, err := os.ReadFile(absFrom)
 	if err != nil {
-		return fmt.Errorf("reading source %s: %w", from, err)
+		return fmt.Errorf("reading source %s: %w", cleanFrom, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(absTo), 0o755); err != nil {
 		return fmt.Errorf("creating destination directories: %w", err)
 	}
 	if err := os.WriteFile(absTo, content, 0o644); err != nil {
-		return fmt.Errorf("writing destination %s: %w", to, err)
+		return fmt.Errorf("writing destination %s: %w", cleanTo, err)
 	}
-	if _, err := s.worktree.Add(filepath.ToSlash(to)); err != nil {
-		return fmt.Errorf("staging new file %s: %w", to, err)
+	if _, err := s.worktree.Add(cleanTo); err != nil {
+		return fmt.Errorf("staging new file %s: %w", cleanTo, err)
 	}
 	// Remove old file from disk and from the index.
-	if _, err := s.worktree.Remove(filepath.ToSlash(from)); err != nil {
-		return fmt.Errorf("removing old file %s from index: %w", from, err)
+	if _, err := s.worktree.Remove(cleanFrom); err != nil {
+		return fmt.Errorf("removing old file %s from index: %w", cleanFrom, err)
 	}
-	s.logger.Debug("moved file", "from", from, "to", to)
+	s.logger.Debug("moved file", "from", cleanFrom, "to", cleanTo)
 	return nil
 }
 
 // DeleteFile removes a file from the repo, stages the removal, and returns an
 // error if the file does not exist.
 func (s *Store) DeleteFile(relPath string) error {
-	if !s.FileExists(relPath) {
-		return fmt.Errorf("file not found: %s", relPath)
+	cleanPath, err := CleanContentPath(relPath)
+	if err != nil {
+		return err
 	}
-	if _, err := s.worktree.Remove(filepath.ToSlash(relPath)); err != nil {
-		return fmt.Errorf("removing %s from index: %w", relPath, err)
+	if !s.FileExists(cleanPath) {
+		return fmt.Errorf("file not found: %s", cleanPath)
 	}
-	s.logger.Debug("deleted and staged removal", "path", relPath)
+	if _, err := s.worktree.Remove(cleanPath); err != nil {
+		return fmt.Errorf("removing %s from index: %w", cleanPath, err)
+	}
+	s.logger.Debug("deleted and staged removal", "path", cleanPath)
 	return nil
 }
 

@@ -8,6 +8,7 @@
 //
 //	post    Store content in the knowledge base
 //	get     Retrieve content from the knowledge base
+//	edit    Edit an existing document in the knowledge base
 //	job     Check the status of a store job
 //	recent  List the 20 most recently stored documents
 package main
@@ -52,6 +53,8 @@ func main() {
 		runPost(server, args, logger)
 	case "get":
 		runGet(server, args, logger)
+	case "edit":
+		runEdit(server, args, logger)
 	case "job":
 		runJob(server, args, logger)
 	case "delete":
@@ -191,6 +194,77 @@ Flags:`)
 	default:
 		printSynthesis(rawBody, logger)
 	}
+}
+
+// ── edit ─────────────────────────────────────────────────────────────────────
+
+func runEdit(server string, args []string, logger *slog.Logger) {
+	fs := flag.NewFlagSet("edit", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, `Usage: kc edit --path <repo-relative-path> [flags]
+
+Edit an existing Markdown document. Content is read from --content,
+--file, or stdin (in that priority order).
+
+Flags:`)
+		fs.PrintDefaults()
+	}
+
+	path := fs.String("path", "", "repo-relative file path to edit (e.g. tech/go/basics.md)")
+	content := fs.String("content", "", "replacement content (inline string)")
+	file := fs.String("file", "", "read replacement content from this file path")
+	title := fs.String("title", "", "optional INDEX.md title update")
+	description := fs.String("description", "", "optional INDEX.md description update")
+	wait := fs.Bool("wait", false, "poll until the job completes")
+	timeout := fs.Int("timeout", 120, "seconds to wait when --wait is set")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*path) == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+	body, err := resolveContent(*content, *file)
+	if err != nil {
+		fatal(logger, "reading content", err)
+	}
+	if strings.TrimSpace(body) == "" {
+		fatal(logger, "reading content", fmt.Errorf("content is empty"))
+	}
+
+	reqBody := map[string]string{
+		"path":        *path,
+		"content":     body,
+		"title":       *title,
+		"description": *description,
+	}
+
+	var resp struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := putJSON(server+"/content", reqBody, &resp); err != nil {
+		fatal(logger, "editing content", err)
+	}
+	if resp.Error != "" {
+		fatal(logger, "server error", fmt.Errorf("%s", resp.Error))
+	}
+
+	logger.Info("edit job enqueued", "job_id", resp.JobID, "status", resp.Status)
+	fmt.Println(resp.JobID)
+
+	if !*wait {
+		return
+	}
+
+	logger.Info("waiting for edit job to complete", "job_id", resp.JobID, "timeout_s", *timeout)
+	job, err := pollJob(server, resp.JobID, time.Duration(*timeout)*time.Second, logger)
+	if err != nil {
+		fatal(logger, "polling job", err)
+	}
+	printJobResult(job)
 }
 
 // ── job ──────────────────────────────────────────────────────────────────────
@@ -502,6 +576,28 @@ func deleteJSON(endpoint string, body any, out any) error {
 	return nil
 }
 
+func putJSON(endpoint string, body any, out any) error {
+	var buf strings.Builder
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		return fmt.Errorf("encoding request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, endpoint, strings.NewReader(buf.String()))
+	if err != nil {
+		return fmt.Errorf("building PUT request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decoding response (HTTP %d): %w\nbody: %s", resp.StatusCode, err, string(raw))
+	}
+	return nil
+}
+
 func getJSON(endpoint string, out any) error {
 	raw, err := getRequest(endpoint)
 	if err != nil {
@@ -537,6 +633,7 @@ Usage:
 Commands:
   post     Store content in the knowledge base
   get      Retrieve content from the knowledge base
+  edit     Edit an existing document in the knowledge base
   delete   Delete a file from the knowledge base
   job      Check the status of a job
   recent   List the 20 most recently stored documents
@@ -556,6 +653,9 @@ Examples:
 
   # Retrieve a specific file
   kc get --path tech/go/goroutines.md
+
+  # Edit a specific file and wait for the commit
+  kc edit --path tech/go/goroutines.md --file updated.md --wait
 
   # Ask a question (LLM synthesis)
   kc get --query "what do I know about Go concurrency?"

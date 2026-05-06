@@ -83,6 +83,18 @@ kc get --query "docker" --mode raw
 answer=$(kc get --query "summarize our Go conventions")
 ```
 
+## Editing knowledge
+
+`kc edit` is async and commits the replacement content through the server.
+Use `--wait` when you need to confirm the edit in the same session:
+
+```sh
+kc edit --path category/subtopic/file.md --file updated.md --wait
+kc edit --path category/subtopic/file.md --content "Updated notes..." --wait
+```
+
+Optional `--title` and `--description` update the matching `INDEX.md` entry.
+
 ## Checking the index
 
 `INDEX.md` is the canonical list of everything stored. Check it to avoid storing duplicates or to find file paths for `--path` lookups:
@@ -110,6 +122,7 @@ If the server restarts mid-job, recovery is automatic. On startup the server sca
 **Do:**
 - Always provide `--hint` when storing content.
 - Use `--wait` when you need to reference the stored path in the same session.
+- Use `kc edit --wait` when changing an existing document.
 - Use `--mode raw` when you only need to read documents, not synthesize.
 - Check `INDEX.md` before storing to avoid near-duplicate entries.
 

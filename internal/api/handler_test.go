@@ -126,6 +126,67 @@ func TestDeleteContent_EmptyPath(t *testing.T) {
 	}
 }
 
+func TestPutContent_Returns202(t *testing.T) {
+	h, st := newTestHandler(t)
+
+	if err := st.WriteFile("notes/hello.md", "old"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := st.Commit("seed"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"path":    "notes/hello.md",
+		"content": "new",
+	})
+	req := httptest.NewRequest(http.MethodPut, "/content", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PutContent(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if resp.JobID == "" {
+		t.Error("expected non-empty job_id in response")
+	}
+	if resp.Status != "queued" {
+		t.Errorf("expected status %q, got %q", "queued", resp.Status)
+	}
+}
+
+func TestPutContent_RejectsInvalidInput(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	cases := []map[string]string{
+		{"path": "notes/hello.md", "content": "  "},
+		{"path": "  ", "content": "new"},
+		{"path": "../outside.md", "content": "new"},
+	}
+	for _, bodyMap := range cases {
+		body, _ := json.Marshal(bodyMap)
+		req := httptest.NewRequest(http.MethodPut, "/content", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.PutContent(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for %#v, got %d — body: %s", bodyMap, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 const testIndex = `# Index
 
 <!-- Auto-managed by knowledged. Do not edit manually. -->

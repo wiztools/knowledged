@@ -53,6 +53,31 @@ func registerTools(s *server.MCPServer, c *Client) {
 		makeGetContentHandler(c),
 	)
 
+	// edit_content
+	s.AddTool(
+		mcp.NewTool("edit_content",
+			mcp.WithDescription("Edit an existing Markdown document in the knowledged knowledge base. Overwrites the file and optionally updates its INDEX.md title/description in a single atomic git commit. Returns a job_id. Use wait=true to block until the job completes."),
+			mcp.WithString("path",
+				mcp.Required(),
+				mcp.Description("Repo-relative file path to edit (e.g. 'tech/go/goroutines.md')"),
+			),
+			mcp.WithString("content",
+				mcp.Required(),
+				mcp.Description("Replacement Markdown content"),
+			),
+			mcp.WithString("title",
+				mcp.Description("Optional replacement title for the INDEX.md entry"),
+			),
+			mcp.WithString("description",
+				mcp.Description("Optional replacement description for the INDEX.md entry"),
+			),
+			mcp.WithBoolean("wait",
+				mcp.Description("If true, poll until the job completes. Default: false."),
+			),
+		),
+		makeEditContentHandler(c),
+	)
+
 	// delete_content
 	s.AddTool(
 		mcp.NewTool("delete_content",
@@ -204,6 +229,50 @@ func makeDeleteContentHandler(c *Client) func(context.Context, mcp.CallToolReque
 		}
 
 		// Poll until done or 120s timeout.
+		deadline := time.Now().Add(120 * time.Second)
+		interval := 2 * time.Second
+		for {
+			job, err := c.CheckJob(resp.JobID)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("polling job %s: %s", resp.JobID, err)), nil
+			}
+			if job.Status == "done" {
+				return mcp.NewToolResultText(fmt.Sprintf("job_id: %s\nstatus: done\npath: %s", job.JobID, job.Path)), nil
+			}
+			if job.Status == "failed" {
+				return mcp.NewToolResultError(fmt.Sprintf("job %s failed: %s", job.JobID, job.Error)), nil
+			}
+			if time.Now().After(deadline) {
+				return mcp.NewToolResultError(fmt.Sprintf("timed out waiting for job %s (last status: %s)", resp.JobID, job.Status)), nil
+			}
+			time.Sleep(interval)
+		}
+	}
+}
+
+func makeEditContentHandler(c *Client) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		path, err := req.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError("missing required parameter: path"), nil
+		}
+		content, err := req.RequireString("content")
+		if err != nil {
+			return mcp.NewToolResultError("missing required parameter: content"), nil
+		}
+		title := req.GetString("title", "")
+		description := req.GetString("description", "")
+		wait := req.GetBool("wait", false)
+
+		resp, err := c.EditContent(path, content, title, description)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("edit_content failed: %s", err)), nil
+		}
+
+		if !wait {
+			return mcp.NewToolResultText(fmt.Sprintf("job_id: %s\nstatus: %s", resp.JobID, resp.Status)), nil
+		}
+
 		deadline := time.Now().Add(120 * time.Second)
 		interval := 2 * time.Second
 		for {

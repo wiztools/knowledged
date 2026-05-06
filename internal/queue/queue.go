@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,18 +41,20 @@ const resultsTTL = time.Hour
 
 const originPushStateFile = "origin-push.json"
 
-// Job represents one unit of work: store or delete a piece of content.
+// Job represents one unit of work: store, edit, or delete a piece of content.
 type Job struct {
 	ID          string     `json:"id"`
 	Status      Status     `json:"status"`
 	Timestamp   time.Time  `json:"ts"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"` // set when terminal; used for TTL eviction
-	Operation   string     `json:"operation,omitempty"`    // "post" or "delete"; empty means "post" (backward compat)
+	Operation   string     `json:"operation,omitempty"`    // "post", "edit", or "delete"; empty means "post" (backward compat)
 	Content     string     `json:"content,omitempty"`
 	ContentHash string     `json:"content_hash,omitempty"` // SHA-256 of Content; used for deduplication
 	Hint        string     `json:"hint,omitempty"`
 	Tags        []string   `json:"tags,omitempty"`
 	Path        string     `json:"path,omitempty"`  // target path; set on enqueue for delete, after store for post
+	Title       string     `json:"title,omitempty"` // optional INDEX.md title update for edit
+	Description string     `json:"description,omitempty"`
 	Error       string     `json:"error,omitempty"` // set on failure
 }
 
@@ -177,12 +180,16 @@ func (q *Queue) Enqueue(content, hint string, tags []string) (*Job, error) {
 // EnqueueDelete appends a new delete job to the persistent queue and signals
 // the worker. The file at path will be removed along with its INDEX.md entry.
 func (q *Queue) EnqueueDelete(path string) (*Job, error) {
+	cleanPath, err := store.CleanContentPath(path)
+	if err != nil {
+		return nil, err
+	}
 	job := &Job{
 		ID:        uuid.New().String(),
 		Status:    StatusQueued,
 		Timestamp: time.Now().UTC(),
 		Operation: "delete",
-		Path:      path,
+		Path:      cleanPath,
 	}
 
 	q.mu.Lock()
@@ -199,6 +206,49 @@ func (q *Queue) EnqueueDelete(path string) (*Job, error) {
 	q.mu.Unlock()
 
 	q.logger.Info("delete job enqueued", "job_id", job.ID, "path", path)
+
+	select {
+	case q.signal <- struct{}{}:
+	default:
+	}
+
+	return job, nil
+}
+
+// EnqueueEdit appends a new edit job to the persistent queue and signals the
+// worker. The file at path is overwritten, with an optional INDEX.md entry
+// metadata update, in a single atomic git commit.
+func (q *Queue) EnqueueEdit(path, content, title, description string) (*Job, error) {
+	cleanPath, err := store.CleanContentPath(path)
+	if err != nil {
+		return nil, err
+	}
+	job := &Job{
+		ID:          uuid.New().String(),
+		Status:      StatusQueued,
+		Timestamp:   time.Now().UTC(),
+		Operation:   "edit",
+		Path:        cleanPath,
+		Content:     content,
+		ContentHash: contentHash(content),
+		Title:       title,
+		Description: description,
+	}
+
+	q.mu.Lock()
+	jobs, err := q.loadJobs()
+	if err != nil {
+		q.mu.Unlock()
+		return nil, fmt.Errorf("loading queue: %w", err)
+	}
+	jobs = append(jobs, job)
+	if err := q.saveJobs(jobs); err != nil {
+		q.mu.Unlock()
+		return nil, fmt.Errorf("saving queue: %w", err)
+	}
+	q.mu.Unlock()
+
+	q.logger.Info("edit job enqueued", "job_id", job.ID, "path", cleanPath)
 
 	select {
 	case q.signal <- struct{}{}:
@@ -413,6 +463,10 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 		q.executeDelete(ctx, job)
 		return
 	}
+	if job.Operation == "edit" {
+		q.executeEdit(ctx, job)
+		return
+	}
 
 	// Default: "post" or empty (backward compat with existing queue entries).
 	// Retry on timeout: Jan may need time to load the model into GPU memory on
@@ -493,6 +547,47 @@ func (q *Queue) executeDelete(ctx context.Context, job *Job) {
 	}
 
 	q.logger.Info("delete job completed", "job_id", job.ID, "path", job.Path)
+	q.finalize(job, job.Path, nil)
+}
+
+// executeEdit overwrites a file and optionally updates its INDEX.md entry as a
+// single atomic git commit.
+func (q *Queue) executeEdit(ctx context.Context, job *Job) {
+	if strings.TrimSpace(job.Content) == "" {
+		err := fmt.Errorf("content must not be empty")
+		q.logger.Error("edit job failed — content is empty", "job_id", job.ID, "path", job.Path)
+		q.finalize(job, "", err)
+		return
+	}
+	if !q.store.FileExists(job.Path) {
+		err := fmt.Errorf("file not found: %s", job.Path)
+		q.logger.Error("edit job failed — file does not exist", "job_id", job.ID, "path", job.Path)
+		q.finalize(job, "", err)
+		return
+	}
+
+	if err := q.store.WriteFile(job.Path, job.Content); err != nil {
+		q.logger.Error("WriteFile failed during edit", "job_id", job.ID, "path", job.Path, "error", err)
+		q.finalize(job, "", err)
+		return
+	}
+
+	if job.Title != "" || job.Description != "" {
+		if err := q.store.UpdateIndexEntry(job.Path, job.Title, job.Description); err != nil {
+			q.logger.Error("UpdateIndexEntry failed", "job_id", job.ID, "path", job.Path, "error", err)
+			q.finalize(job, "", err)
+			return
+		}
+	}
+
+	msg := fmt.Sprintf("edit(%s): %s", job.ID, job.Path)
+	if err := q.store.Commit(msg); err != nil {
+		q.logger.Error("commit failed after edit", "job_id", job.ID, "error", err)
+		q.finalize(job, "", err)
+		return
+	}
+
+	q.logger.Info("edit job completed", "job_id", job.ID, "path", job.Path)
 	q.finalize(job, job.Path, nil)
 }
 

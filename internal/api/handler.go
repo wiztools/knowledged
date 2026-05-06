@@ -71,6 +71,53 @@ func (h *Handler) PostContent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── PUT /content ─────────────────────────────────────────────────────────────
+
+type editContentRequest struct {
+	Path        string `json:"path"`
+	Content     string `json:"content"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// PutContent enqueues an edit request and returns a job ID immediately.
+func (h *Handler) PutContent(w http.ResponseWriter, r *http.Request) {
+	var req editContentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		h.writeError(w, http.StatusBadRequest, "path must not be empty")
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		h.writeError(w, http.StatusBadRequest, "content must not be empty")
+		return
+	}
+	cleanPath, err := store.CleanContentPath(req.Path)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	h.logger.Info("received PUT /content request",
+		"path", cleanPath,
+		"content_len", len(req.Content))
+
+	job, err := h.queue.EnqueueEdit(cleanPath, req.Content, req.Title, req.Description)
+	if err != nil {
+		h.logger.Error("failed to enqueue edit job", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "failed to enqueue: "+err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusAccepted, postContentResponse{
+		JobID:  job.ID,
+		Status: string(job.Status),
+	})
+}
+
 // ── DELETE /content ──────────────────────────────────────────────────────────
 
 type deleteContentRequest struct {
@@ -88,17 +135,22 @@ func (h *Handler) DeleteContent(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "path must not be empty")
 		return
 	}
+	cleanPath, err := store.CleanContentPath(req.Path)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	h.logger.Info("received DELETE /content request", "path", req.Path)
+	h.logger.Info("received DELETE /content request", "path", cleanPath)
 
-	job, err := h.queue.EnqueueDelete(req.Path)
+	job, err := h.queue.EnqueueDelete(cleanPath)
 	if err != nil {
 		h.logger.Error("failed to enqueue delete job", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "failed to enqueue: "+err.Error())
 		return
 	}
 
-	h.logger.Info("delete job enqueued", "job_id", job.ID, "path", req.Path)
+	h.logger.Info("delete job enqueued", "job_id", job.ID, "path", cleanPath)
 
 	h.writeJSON(w, http.StatusAccepted, postContentResponse{
 		JobID:  job.ID,
