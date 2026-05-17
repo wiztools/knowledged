@@ -104,7 +104,7 @@ func placementSchema() llm.Schema {
 				},
 				"refactors": map[string]any{
 					"type":        "array",
-					"description": "Optional. Only file moves WITHIN the sections shown above. Empty unless a move meaningfully improves placement.",
+					"description": "Only file moves WITHIN the sections shown above. Always include this key; emit an empty array unless a move meaningfully improves placement.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -136,7 +136,7 @@ func placementSchema() llm.Schema {
 					},
 				},
 			},
-			"required":             []string{"target_path", "title", "description", "updated_sections"},
+			"required":             []string{"target_path", "title", "description", "refactors", "updated_sections"},
 			"additionalProperties": false,
 		},
 	}
