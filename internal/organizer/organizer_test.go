@@ -26,12 +26,12 @@ type fakeCall struct {
 	structured bool
 }
 
-func (f *fakeLLM) Complete(_ context.Context, system, user string) (string, error) {
+func (f *fakeLLM) Complete(_ context.Context, system, user string, _ ...llm.CallOption) (string, error) {
 	f.calls = append(f.calls, fakeCall{system: system, user: user})
 	return f.next()
 }
 
-func (f *fakeLLM) CompleteStructured(_ context.Context, system, user string, schema llm.Schema) (string, error) {
+func (f *fakeLLM) CompleteStructured(_ context.Context, system, user string, schema llm.Schema, _ ...llm.CallOption) (string, error) {
 	s := schema
 	f.calls = append(f.calls, fakeCall{system: system, user: user, schema: &s, structured: true})
 	return f.next()

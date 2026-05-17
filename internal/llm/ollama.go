@@ -24,6 +24,9 @@ type ollamaChatRequest struct {
 	// Schema object here and constrains generation to match it. Omitted
 	// (zero value → omitempty drops it) for free-form Complete calls.
 	Format map[string]any `json:"format,omitempty"`
+	// Think enables reasoning-model chain-of-thought when set to a non-nil
+	// true. Set via WithReasoningBudget; ignored by non-reasoning models.
+	Think *bool `json:"think,omitempty"`
 }
 
 type ollamaChatResponse struct {
@@ -51,21 +54,21 @@ func NewOllama(baseURL, model string, logger *slog.Logger) *Ollama {
 	}
 }
 
-func (o *Ollama) Complete(ctx context.Context, system, user string) (string, error) {
-	return o.chat(ctx, system, user, nil)
+func (o *Ollama) Complete(ctx context.Context, system, user string, opts ...CallOption) (string, error) {
+	return o.chat(ctx, system, user, nil, opts)
 }
 
 // CompleteStructured asks Ollama to constrain its reply to schema.Schema by
 // passing it through the chat API's `format` field. The returned string is
 // the JSON content of the assistant message.
-func (o *Ollama) CompleteStructured(ctx context.Context, system, user string, schema Schema) (string, error) {
+func (o *Ollama) CompleteStructured(ctx context.Context, system, user string, schema Schema, opts ...CallOption) (string, error) {
 	if schema.Schema == nil {
 		return "", fmt.Errorf("ollama: structured call requires a non-nil Schema.Schema")
 	}
-	return o.chat(ctx, system, user, schema.Schema)
+	return o.chat(ctx, system, user, schema.Schema, opts)
 }
 
-func (o *Ollama) chat(ctx context.Context, system, user string, format map[string]any) (string, error) {
+func (o *Ollama) chat(ctx context.Context, system, user string, format map[string]any, opts []CallOption) (string, error) {
 	req := ollamaChatRequest{
 		Model: o.model,
 		Messages: []ollamaMessage{
@@ -74,6 +77,10 @@ func (o *Ollama) chat(ctx context.Context, system, user string, format map[strin
 		},
 		Stream: false,
 		Format: format,
+	}
+	if ResolveReasoningBudget(opts) > 0 {
+		t := true
+		req.Think = &t
 	}
 
 	body, err := json.Marshal(req)

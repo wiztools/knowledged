@@ -18,6 +18,11 @@ var anthropicURL = "https://api.anthropic.com/v1/messages"
 const anthropicVersion = "2023-06-01"
 const anthropicMaxTokens = 4096
 
+// anthropicMinThinkingBudget is the Messages API's minimum extended-thinking
+// budget. Smaller positive values are clamped up rather than rejected so a
+// caller asking for "any thinking at all" still gets through.
+const anthropicMinThinkingBudget = 1024
+
 type anthropicMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -31,6 +36,13 @@ type anthropicRequest struct {
 	// Tools and ToolChoice are only set for structured-output calls.
 	Tools      []anthropicTool      `json:"tools,omitempty"`
 	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
+	// Thinking is only set when WithReasoningBudget is in effect.
+	Thinking *anthropicThinking `json:"thinking,omitempty"`
+}
+
+type anthropicThinking struct {
+	Type         string `json:"type"` // "enabled"
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 // anthropicTool follows the Messages API tool definition shape. We use it to
@@ -86,13 +98,15 @@ func NewAnthropic(apiKey, model string, logger *slog.Logger) *Anthropic {
 	}
 }
 
-func (a *Anthropic) Complete(ctx context.Context, system, user string) (string, error) {
-	resp, err := a.send(ctx, anthropicRequest{
+func (a *Anthropic) Complete(ctx context.Context, system, user string, opts ...CallOption) (string, error) {
+	req := anthropicRequest{
 		Model:     a.model,
 		MaxTokens: anthropicMaxTokens,
 		System:    system,
 		Messages:  []anthropicMessage{{Role: "user", Content: user}},
-	})
+	}
+	applyAnthropicOptions(&req, opts)
+	resp, err := a.send(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -107,14 +121,14 @@ func (a *Anthropic) Complete(ctx context.Context, system, user string) (string, 
 // CompleteStructured uses Anthropic tool_use to force a JSON reply matching
 // schema.Schema. The schema becomes the (single) tool's input_schema, and
 // tool_choice locks the model into calling it.
-func (a *Anthropic) CompleteStructured(ctx context.Context, system, user string, schema Schema) (string, error) {
+func (a *Anthropic) CompleteStructured(ctx context.Context, system, user string, schema Schema, opts ...CallOption) (string, error) {
 	if schema.Schema == nil {
 		return "", fmt.Errorf("anthropic: structured call requires a non-nil Schema.Schema")
 	}
 	if schema.Name == "" {
 		return "", fmt.Errorf("anthropic: structured call requires a Schema.Name")
 	}
-	resp, err := a.send(ctx, anthropicRequest{
+	req := anthropicRequest{
 		Model:     a.model,
 		MaxTokens: anthropicMaxTokens,
 		System:    system,
@@ -125,7 +139,9 @@ func (a *Anthropic) CompleteStructured(ctx context.Context, system, user string,
 			InputSchema: schema.Schema,
 		}},
 		ToolChoice: &anthropicToolChoice{Type: "tool", Name: schema.Name},
-	})
+	}
+	applyAnthropicOptions(&req, opts)
+	resp, err := a.send(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -135,6 +151,24 @@ func (a *Anthropic) CompleteStructured(ctx context.Context, system, user string,
 		}
 	}
 	return "", fmt.Errorf("Anthropic API returned no tool_use block for %q", schema.Name)
+}
+
+// applyAnthropicOptions translates the generic CallOption set into Messages
+// API request fields. Currently only the reasoning budget is honored.
+func applyAnthropicOptions(req *anthropicRequest, opts []CallOption) {
+	budget := ResolveReasoningBudget(opts)
+	if budget <= 0 {
+		return
+	}
+	if budget < anthropicMinThinkingBudget {
+		budget = anthropicMinThinkingBudget
+	}
+	req.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
+	// max_tokens must exceed budget_tokens; reserve the original cap as
+	// post-thinking output budget so explanations don't get clipped.
+	if req.MaxTokens <= budget {
+		req.MaxTokens = budget + anthropicMaxTokens
+	}
 }
 
 func (a *Anthropic) send(ctx context.Context, req anthropicRequest) (*anthropicResponse, error) {

@@ -28,6 +28,7 @@ func main() {
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
 	janURL := flag.String("jan-url", "http://localhost:8080", "Jan server base URL")
 	pushOriginEvery := flag.Duration("push-origin-every", 0, "if greater than zero, periodically push the current branch to origin from the single git worker (for example: 24h)")
+	askReasoningBudget := flag.Int("ask-reasoning-budget", 2000, "thinking-token budget for POST /ask. Enables Anthropic extended thinking, Ollama think=true, or Jan reasoning_effort on supporting models; pass 0 to disable")
 	flag.Parse()
 
 	// ── Logger ────────────────────────────────────────────────────────────────
@@ -131,13 +132,14 @@ func main() {
 	go q.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	h := api.NewHandler(q, st, provider, rl, logger)
+	h := api.NewHandler(q, st, provider, rl, logger, *askReasoningBudget)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /content", h.PostContent)
 	mux.HandleFunc("PUT /content", h.PutContent)
 	mux.HandleFunc("DELETE /content", h.DeleteContent)
 	mux.HandleFunc("GET /content", h.GetContent)
+	mux.HandleFunc("POST /ask", h.PostAsk)
 	mux.HandleFunc("GET /jobs/{id}", h.GetJob)
 	mux.HandleFunc("GET /posts/recents", h.GetRecentPosts)
 

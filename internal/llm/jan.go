@@ -20,6 +20,10 @@ type janChatRequest struct {
 	Model          string             `json:"model,omitempty"`
 	Messages       []janMessage       `json:"messages"`
 	ResponseFormat *janResponseFormat `json:"response_format,omitempty"`
+	// ReasoningEffort is OpenAI's reasoning toggle ("low" | "medium" | "high").
+	// Only set when WithReasoningBudget is in effect. Non-reasoning models
+	// served by Jan / vLLM / llama.cpp ignore the field.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // janResponseFormat targets the OpenAI-compatible json_schema response mode.
@@ -64,14 +68,14 @@ func NewJan(baseURL, model string, logger *slog.Logger) *Jan {
 	}
 }
 
-func (j *Jan) Complete(ctx context.Context, system, user string) (string, error) {
-	return j.chat(ctx, system, user, nil)
+func (j *Jan) Complete(ctx context.Context, system, user string, opts ...CallOption) (string, error) {
+	return j.chat(ctx, system, user, nil, opts)
 }
 
 // CompleteStructured constrains the reply to schema.Schema via the OpenAI-
 // compatible response_format = json_schema mechanism. The returned string is
 // the JSON content of the assistant message.
-func (j *Jan) CompleteStructured(ctx context.Context, system, user string, schema Schema) (string, error) {
+func (j *Jan) CompleteStructured(ctx context.Context, system, user string, schema Schema, opts ...CallOption) (string, error) {
 	if schema.Schema == nil {
 		return "", fmt.Errorf("jan: structured call requires a non-nil Schema.Schema")
 	}
@@ -87,17 +91,18 @@ func (j *Jan) CompleteStructured(ctx context.Context, system, user string, schem
 			Strict:      true,
 		},
 	}
-	return j.chat(ctx, system, user, rf)
+	return j.chat(ctx, system, user, rf, opts)
 }
 
-func (j *Jan) chat(ctx context.Context, system, user string, rf *janResponseFormat) (string, error) {
+func (j *Jan) chat(ctx context.Context, system, user string, rf *janResponseFormat, opts []CallOption) (string, error) {
 	req := janChatRequest{
 		Model: j.model,
 		Messages: []janMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		ResponseFormat: rf,
+		ResponseFormat:  rf,
+		ReasoningEffort: janReasoningEffort(ResolveReasoningBudget(opts)),
 	}
 
 	body, err := json.Marshal(req)
@@ -148,4 +153,19 @@ func (j *Jan) chat(ctx context.Context, system, user string, rf *janResponseForm
 	content := chatResp.Choices[0].Message.Content
 	j.logger.Debug("received response from Jan", "content_len", len(content))
 	return content, nil
+}
+
+// janReasoningEffort maps an opaque token budget to OpenAI's reasoning_effort
+// string. Returns "" when reasoning is disabled so omitempty drops the field.
+func janReasoningEffort(budget int) string {
+	switch {
+	case budget <= 0:
+		return ""
+	case budget <= 512:
+		return "low"
+	case budget <= 2048:
+		return "medium"
+	default:
+		return "high"
+	}
 }

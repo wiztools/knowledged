@@ -27,20 +27,31 @@ type fakeLLM struct {
 }
 
 type fakeCall struct {
-	system     string
-	user       string
-	schema     *llm.Schema
-	structured bool
+	system          string
+	user            string
+	schema          *llm.Schema
+	structured      bool
+	reasoningBudget int
 }
 
-func (f *fakeLLM) Complete(_ context.Context, system, user string) (string, error) {
-	f.calls = append(f.calls, fakeCall{system: system, user: user})
+func (f *fakeLLM) Complete(_ context.Context, system, user string, opts ...llm.CallOption) (string, error) {
+	f.calls = append(f.calls, fakeCall{
+		system:          system,
+		user:            user,
+		reasoningBudget: llm.ResolveReasoningBudget(opts),
+	})
 	return f.next()
 }
 
-func (f *fakeLLM) CompleteStructured(_ context.Context, system, user string, schema llm.Schema) (string, error) {
+func (f *fakeLLM) CompleteStructured(_ context.Context, system, user string, schema llm.Schema, opts ...llm.CallOption) (string, error) {
 	s := schema
-	f.calls = append(f.calls, fakeCall{system: system, user: user, schema: &s, structured: true})
+	f.calls = append(f.calls, fakeCall{
+		system:          system,
+		user:            user,
+		schema:          &s,
+		structured:      true,
+		reasoningBudget: llm.ResolveReasoningBudget(opts),
+	})
 	return f.next()
 }
 
@@ -69,9 +80,26 @@ func newTestHandlerWithLLM(t *testing.T, llm *fakeLLM) (*Handler, *store.Store) 
 		t.Fatalf("queue.New: %v", err)
 	}
 	if llm == nil {
-		return NewHandler(q, st, nil, nil, logger), st
+		return NewHandler(q, st, nil, nil, logger, 0), st
 	}
-	return NewHandler(q, st, llm, nil, logger), st
+	return NewHandler(q, st, llm, nil, logger, 0), st
+}
+
+// newTestHandlerWithBudget is like newTestHandlerWithLLM but lets the test
+// assert that /ask forwards the configured reasoning budget as an option.
+func newTestHandlerWithBudget(t *testing.T, fl *fakeLLM, budget int) (*Handler, *store.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st, err := store.New(dir, logger)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	q, err := queue.New(st, nil, nil, logger, 0)
+	if err != nil {
+		t.Fatalf("queue.New: %v", err)
+	}
+	return NewHandler(q, st, fl, nil, logger, budget), st
 }
 
 func TestDeleteContent_Returns202(t *testing.T) {
@@ -418,6 +446,168 @@ func TestParseNeedFull_DetectsJSONShape(t *testing.T) {
 				t.Errorf("paths = %v, want %v", paths, tc.wantPaths)
 			}
 		})
+	}
+}
+
+func TestPostAsk_ReturnsAnswerAndTags(t *testing.T) {
+	fake := &fakeLLM{replies: []string{
+		`{"answer":"## Goroutines\n\nLightweight threads managed by the Go runtime.\n","tags":["golang","concurrency"," "]}`,
+	}}
+	h, _ := newTestHandlerWithLLM(t, fake)
+
+	body, _ := json.Marshal(map[string]string{"question": "what are goroutines?"})
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PostAsk(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Question string   `json:"question"`
+		Answer   string   `json:"answer"`
+		Tags     []string `json:"tags"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if resp.Question != "what are goroutines?" {
+		t.Errorf("question = %q, want %q", resp.Question, "what are goroutines?")
+	}
+	if !strings.HasPrefix(resp.Answer, "## Goroutines") {
+		t.Errorf("answer should preserve Markdown, got %q", resp.Answer)
+	}
+	if strings.HasSuffix(resp.Answer, "\n") {
+		t.Errorf("answer should be trimmed of trailing whitespace, got %q", resp.Answer)
+	}
+	want := []string{"golang", "concurrency"}
+	if !equalStringSlices(resp.Tags, want) {
+		t.Errorf("tags = %v, want %v (whitespace-only entries should be dropped)", resp.Tags, want)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", len(fake.calls))
+	}
+	if !fake.calls[0].structured {
+		t.Error("ask should use CompleteStructured so tags + answer come back together")
+	}
+	if fake.calls[0].schema == nil || fake.calls[0].schema.Name != "knowledge_draft" {
+		t.Errorf("expected schema named knowledge_draft, got %+v", fake.calls[0].schema)
+	}
+	if fake.calls[0].user != "what are goroutines?" {
+		t.Errorf("user prompt = %q, want raw question", fake.calls[0].user)
+	}
+	if !strings.Contains(fake.calls[0].system, "tags") {
+		t.Error("system prompt should mention tags")
+	}
+}
+
+func TestPostAsk_ForwardsReasoningBudget(t *testing.T) {
+	fake := &fakeLLM{replies: []string{`{"answer":"## X\n\nstub","tags":[]}`}}
+	h, _ := newTestHandlerWithBudget(t, fake, 2048)
+
+	body, _ := json.Marshal(map[string]string{"question": "what is X?"})
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PostAsk(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", len(fake.calls))
+	}
+	if fake.calls[0].reasoningBudget != 2048 {
+		t.Errorf("reasoning budget = %d, want %d", fake.calls[0].reasoningBudget, 2048)
+	}
+}
+
+func TestPostAsk_ZeroBudgetSkipsReasoning(t *testing.T) {
+	fake := &fakeLLM{replies: []string{`{"answer":"## X\n\nstub","tags":[]}`}}
+	h, _ := newTestHandlerWithBudget(t, fake, 0)
+
+	body, _ := json.Marshal(map[string]string{"question": "what is X?"})
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PostAsk(rec, req)
+
+	if fake.calls[0].reasoningBudget != 0 {
+		t.Errorf("budget=0 should pass no reasoning option (resolved=0), got %d", fake.calls[0].reasoningBudget)
+	}
+}
+
+func TestPostAsk_EmptyTagsSerializeAsEmptyArray(t *testing.T) {
+	fake := &fakeLLM{replies: []string{
+		`{"answer":"## Unknown\n\nI don't know.","tags":[]}`,
+	}}
+	h, _ := newTestHandlerWithLLM(t, fake)
+
+	body, _ := json.Marshal(map[string]string{"question": "what is xyzzy?"})
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PostAsk(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	// The raw body should contain "tags":[] not "tags":null — clients shouldn't
+	// have to handle nil specially.
+	if !strings.Contains(rec.Body.String(), `"tags":[]`) {
+		t.Errorf("expected empty tags to serialize as [], body was: %s", rec.Body.String())
+	}
+}
+
+func TestPostAsk_MalformedLLMReply(t *testing.T) {
+	fake := &fakeLLM{replies: []string{`not json`}}
+	h, _ := newTestHandlerWithLLM(t, fake)
+
+	body, _ := json.Marshal(map[string]string{"question": "what?"})
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PostAsk(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 502 for malformed LLM JSON, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostAsk_EmptyQuestion(t *testing.T) {
+	h, _ := newTestHandlerWithLLM(t, &fakeLLM{})
+
+	body, _ := json.Marshal(map[string]string{"question": "   "})
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PostAsk(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostAsk_NoLLMConfigured(t *testing.T) {
+	h, _ := newTestHandler(t) // nil LLM
+
+	body, _ := json.Marshal(map[string]string{"question": "what is X?"})
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.PostAsk(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d — body: %s", rec.Code, rec.Body.String())
 	}
 }
 

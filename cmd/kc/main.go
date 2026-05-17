@@ -9,8 +9,10 @@
 //	post    Store content in the knowledge base
 //	get     Retrieve content from the knowledge base
 //	edit    Edit an existing document in the knowledge base
+//	delete  Delete a file from the knowledge base
 //	job     Check the status of a store job
 //	recent  List the 20 most recently stored documents
+//	ask     Draft a Markdown answer from the configured LLM
 package main
 
 import (
@@ -36,6 +38,7 @@ func main() {
 
 	// Global flags (must come before the subcommand).
 	serverFlag := flag.String("server", defaultServer, "knowledged server URL")
+	jsonFlag := flag.Bool("json", false, "emit the raw JSON server response to stdout (pretty-printed output goes to stderr)")
 	flag.Usage = globalUsage
 	flag.Parse()
 
@@ -47,20 +50,23 @@ func main() {
 	cmd := flag.Arg(0)
 	args := flag.Args()[1:]
 	server := strings.TrimRight(*serverFlag, "/")
+	asJSON := *jsonFlag
 
 	switch cmd {
 	case "post":
-		runPost(server, args, logger)
+		runPost(server, args, logger, asJSON)
 	case "get":
-		runGet(server, args, logger)
+		runGet(server, args, logger, asJSON)
 	case "edit":
-		runEdit(server, args, logger)
+		runEdit(server, args, logger, asJSON)
 	case "job":
-		runJob(server, args, logger)
+		runJob(server, args, logger, asJSON)
 	case "delete":
-		runDelete(server, args, logger)
+		runDelete(server, args, logger, asJSON)
 	case "recent":
-		runRecent(server, logger)
+		runRecent(server, logger, asJSON)
+	case "ask":
+		runAsk(server, args, logger, asJSON)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		globalUsage()
@@ -70,7 +76,7 @@ func main() {
 
 // ── post ─────────────────────────────────────────────────────────────────────
 
-func runPost(server string, args []string, logger *slog.Logger) {
+func runPost(server string, args []string, logger *slog.Logger, asJSON bool) {
 	fs := flag.NewFlagSet("post", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: kc post [flags]
@@ -116,6 +122,30 @@ Flags:`)
 		"tags":    tagList,
 	}
 
+	if asJSON {
+		raw, err := httpRequest(http.MethodPost, server+"/content", reqBody)
+		if err != nil {
+			fatal(logger, "posting content", err)
+		}
+		if !*wait {
+			writeJSONOut(raw)
+			return
+		}
+		var resp struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil || resp.JobID == "" {
+			writeJSONOut(raw)
+			os.Exit(1)
+		}
+		finalRaw, err := pollJobRaw(server, resp.JobID, time.Duration(*timeout)*time.Second, logger)
+		if err != nil {
+			fatal(logger, "polling job", err)
+		}
+		writeJSONOut(finalRaw)
+		return
+	}
+
 	var resp struct {
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
@@ -145,7 +175,7 @@ Flags:`)
 
 // ── get ──────────────────────────────────────────────────────────────────────
 
-func runGet(server string, args []string, logger *slog.Logger) {
+func runGet(server string, args []string, logger *slog.Logger, asJSON bool) {
 	fs := flag.NewFlagSet("get", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: kc get [flags]
@@ -187,6 +217,11 @@ Flags:`)
 		fatal(logger, "GET /content", err)
 	}
 
+	if asJSON {
+		writeJSONOut(rawBody)
+		return
+	}
+
 	// Detect which response shape we got and pretty-print accordingly.
 	switch {
 	case *path != "" || (*query != "" && *mode == "raw"):
@@ -198,7 +233,7 @@ Flags:`)
 
 // ── edit ─────────────────────────────────────────────────────────────────────
 
-func runEdit(server string, args []string, logger *slog.Logger) {
+func runEdit(server string, args []string, logger *slog.Logger, asJSON bool) {
 	fs := flag.NewFlagSet("edit", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: kc edit --path <repo-relative-path> [flags]
@@ -240,6 +275,30 @@ Flags:`)
 		"description": *description,
 	}
 
+	if asJSON {
+		raw, err := httpRequest(http.MethodPut, server+"/content", reqBody)
+		if err != nil {
+			fatal(logger, "editing content", err)
+		}
+		if !*wait {
+			writeJSONOut(raw)
+			return
+		}
+		var resp struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil || resp.JobID == "" {
+			writeJSONOut(raw)
+			os.Exit(1)
+		}
+		finalRaw, err := pollJobRaw(server, resp.JobID, time.Duration(*timeout)*time.Second, logger)
+		if err != nil {
+			fatal(logger, "polling job", err)
+		}
+		writeJSONOut(finalRaw)
+		return
+	}
+
 	var resp struct {
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
@@ -269,7 +328,7 @@ Flags:`)
 
 // ── job ──────────────────────────────────────────────────────────────────────
 
-func runJob(server string, args []string, logger *slog.Logger) {
+func runJob(server string, args []string, logger *slog.Logger, asJSON bool) {
 	fs := flag.NewFlagSet("job", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: kc job --id <job-id>
@@ -290,6 +349,15 @@ Flags:`)
 		os.Exit(1)
 	}
 
+	if asJSON {
+		raw, err := httpRequest(http.MethodGet, server+"/jobs/"+*id, nil)
+		if err != nil {
+			fatal(logger, "GET /jobs", err)
+		}
+		writeJSONOut(raw)
+		return
+	}
+
 	var job jobStatus
 	if err := getJSON(server+"/jobs/"+*id, &job); err != nil {
 		fatal(logger, "GET /jobs", err)
@@ -299,7 +367,7 @@ Flags:`)
 
 // ── delete ────────────────────────────────────────────────────────────────────
 
-func runDelete(server string, args []string, logger *slog.Logger) {
+func runDelete(server string, args []string, logger *slog.Logger, asJSON bool) {
 	fs := flag.NewFlagSet("delete", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: kc delete --path <repo-relative-path> [flags]
@@ -324,6 +392,30 @@ Flags:`)
 	}
 
 	reqBody := map[string]string{"path": *path}
+
+	if asJSON {
+		raw, err := httpRequest(http.MethodDelete, server+"/content", reqBody)
+		if err != nil {
+			fatal(logger, "deleting content", err)
+		}
+		if !*wait {
+			writeJSONOut(raw)
+			return
+		}
+		var resp struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil || resp.JobID == "" {
+			writeJSONOut(raw)
+			os.Exit(1)
+		}
+		finalRaw, err := pollJobRaw(server, resp.JobID, time.Duration(*timeout)*time.Second, logger)
+		if err != nil {
+			fatal(logger, "polling job", err)
+		}
+		writeJSONOut(finalRaw)
+		return
+	}
 
 	var resp struct {
 		JobID  string `json:"job_id"`
@@ -361,7 +453,16 @@ type recentEntry struct {
 	CreatedAt string   `json:"created_at"`
 }
 
-func runRecent(server string, logger *slog.Logger) {
+func runRecent(server string, logger *slog.Logger, asJSON bool) {
+	if asJSON {
+		raw, err := httpRequest(http.MethodGet, server+"/posts/recents", nil)
+		if err != nil {
+			fatal(logger, "GET /posts/recents", err)
+		}
+		writeJSONOut(raw)
+		return
+	}
+
 	var resp struct {
 		Posts []recentEntry `json:"posts"`
 		Error string        `json:"error"`
@@ -396,6 +497,65 @@ func printRecentPosts(posts []recentEntry) {
 		fmt.Printf("%-11s: %s\n", "created_at", createdAt)
 		fmt.Printf("%-11s: %s\n", "job_id", p.JobID)
 	}
+}
+
+// ── ask ──────────────────────────────────────────────────────────────────────
+
+func runAsk(server string, args []string, logger *slog.Logger, asJSON bool) {
+	fs := flag.NewFlagSet("ask", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, `Usage: kc ask --question "..."
+
+Ask the configured LLM to draft a Markdown explanation plus suggested
+tags. The answer goes to stdout, the suggested tags go to stderr —
+safe to pipe into 'kc post' without contaminating the content:
+
+  kc ask --question "what are goroutines?" | kc post --hint golang
+
+Use --json (global flag) to receive the full {question, answer, tags}
+object on stdout instead.
+
+Flags:`)
+		fs.PrintDefaults()
+	}
+
+	question := fs.String("question", "", "the question to ask (required)")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*question) == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	reqBody := map[string]string{"question": *question}
+
+	if asJSON {
+		raw, err := httpRequest(http.MethodPost, server+"/ask", reqBody)
+		if err != nil {
+			fatal(logger, "POST /ask", err)
+		}
+		writeJSONOut(raw)
+		return
+	}
+
+	var resp struct {
+		Question string   `json:"question"`
+		Answer   string   `json:"answer"`
+		Tags     []string `json:"tags"`
+		Error    string   `json:"error"`
+	}
+	if err := postJSON(server+"/ask", reqBody, &resp); err != nil {
+		fatal(logger, "POST /ask", err)
+	}
+	if resp.Error != "" {
+		fatal(logger, "server error", fmt.Errorf("%s", resp.Error))
+	}
+	if len(resp.Tags) > 0 {
+		fmt.Fprintf(os.Stderr, "tags: %s\n\n", strings.Join(resp.Tags, ", "))
+	}
+	fmt.Println(resp.Answer)
 }
 
 // ── shared types & helpers ───────────────────────────────────────────────────
@@ -537,6 +697,69 @@ func printSynthesis(body []byte, logger *slog.Logger) {
 
 var httpClient = &http.Client{Timeout: 180 * time.Second}
 
+// httpRequest performs an HTTP request and returns the response body bytes.
+// Used by --json paths that need to emit the server response verbatim.
+func httpRequest(method, endpoint string, body any) ([]byte, error) {
+	var reader io.Reader
+	if body != nil {
+		var buf strings.Builder
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return nil, fmt.Errorf("encoding request: %w", err)
+		}
+		reader = strings.NewReader(buf.String())
+	}
+	req, err := http.NewRequest(method, endpoint, reader)
+	if err != nil {
+		return nil, fmt.Errorf("building %s request: %w", method, err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, endpoint, err)
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+// writeJSONOut copies the raw server JSON to stdout, ensuring it ends with a
+// newline so shell pipes line up cleanly.
+func writeJSONOut(raw []byte) {
+	os.Stdout.Write(raw)
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		os.Stdout.Write([]byte{'\n'})
+	}
+}
+
+// pollJobRaw polls /jobs/{id} until terminal or deadline and returns the raw
+// final response. Mirrors pollJob but preserves the JSON bytes for --json.
+func pollJobRaw(server, jobID string, timeout time.Duration, logger *slog.Logger) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	interval := 2 * time.Second
+	for {
+		raw, err := httpRequest(http.MethodGet, server+"/jobs/"+jobID, nil)
+		if err != nil {
+			return nil, err
+		}
+		var status struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(raw, &status); err != nil {
+			return nil, fmt.Errorf("decoding poll response: %w\nbody: %s", err, string(raw))
+		}
+		if status.Status == "done" || status.Status == "failed" {
+			return raw, nil
+		}
+		logger.Info("job still in progress", "status", status.Status)
+		if time.Now().Add(interval).After(deadline) {
+			return nil, fmt.Errorf("timed out after %s waiting for job %s (last status: %s)",
+				timeout, jobID, status.Status)
+		}
+		time.Sleep(interval)
+	}
+}
+
 func postJSON(endpoint string, body any, out any) error {
 	var buf strings.Builder
 	if err := json.NewEncoder(&buf).Encode(body); err != nil {
@@ -637,9 +860,11 @@ Commands:
   delete   Delete a file from the knowledge base
   job      Check the status of a job
   recent   List the 20 most recently stored documents
+  ask      Draft a Markdown answer from the LLM (does not store anything)
 
 Global flags:
   --server string   knowledged server URL (default "http://localhost:9090")
+  --json            emit the raw JSON server response on stdout (overrides per-command pretty-printing)
 
 Run 'kc <command> --help' for command-specific flags.
 

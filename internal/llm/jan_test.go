@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -79,6 +80,47 @@ func TestJan_CompleteStructured_SendsJSONSchema(t *testing.T) {
 	}
 	if _, ok := js["schema"]; !ok {
 		t.Errorf("json_schema missing schema key: %v", js)
+	}
+}
+
+func TestJan_Complete_ReasoningEffortMapping(t *testing.T) {
+	cases := []struct {
+		budget int
+		want   string
+	}{
+		{0, ""},     // disabled → field absent
+		{200, "low"},
+		{1024, "medium"},
+		{4000, "high"},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("budget=%d", tc.budget), func(t *testing.T) {
+			var got map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &got)
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+			}))
+			defer srv.Close()
+
+			j := NewJan(srv.URL, "test-model", newSilentLogger())
+			var opts []CallOption
+			if tc.budget > 0 {
+				opts = append(opts, WithReasoningBudget(tc.budget))
+			}
+			if _, err := j.Complete(context.Background(), "s", "u", opts...); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if tc.want == "" {
+				if _, present := got["reasoning_effort"]; present {
+					t.Errorf("reasoning_effort must be omitted when budget=0, got %v", got["reasoning_effort"])
+				}
+				return
+			}
+			if got["reasoning_effort"] != tc.want {
+				t.Errorf("reasoning_effort = %v, want %q", got["reasoning_effort"], tc.want)
+			}
+		})
 	}
 }
 

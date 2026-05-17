@@ -21,11 +21,22 @@ type Handler struct {
 	llm       llm.Provider
 	recentLog *recentlog.RecentLog
 	logger    *slog.Logger
+	// askReasoningBudget controls extended-thinking budget for /ask. 0 disables.
+	askReasoningBudget int
 }
 
-// NewHandler creates a Handler.
-func NewHandler(q *queue.Queue, st *store.Store, provider llm.Provider, rl *recentlog.RecentLog, logger *slog.Logger) *Handler {
-	return &Handler{queue: q, store: st, llm: provider, recentLog: rl, logger: logger}
+// NewHandler creates a Handler. askReasoningBudget is forwarded as
+// llm.WithReasoningBudget on /ask calls; pass 0 to leave reasoning off
+// (useful for backends that don't support it or when latency matters).
+func NewHandler(q *queue.Queue, st *store.Store, provider llm.Provider, rl *recentlog.RecentLog, logger *slog.Logger, askReasoningBudget int) *Handler {
+	return &Handler{
+		queue:              q,
+		store:              st,
+		llm:                provider,
+		recentLog:          rl,
+		logger:             logger,
+		askReasoningBudget: askReasoningBudget,
+	}
 }
 
 // ── POST /content ────────────────────────────────────────────────────────────
@@ -69,6 +80,125 @@ func (h *Handler) PostContent(w http.ResponseWriter, r *http.Request) {
 		JobID:  job.ID,
 		Status: string(job.Status),
 	})
+}
+
+// ── POST /ask ────────────────────────────────────────────────────────────────
+
+type askRequest struct {
+	Question string `json:"question"`
+}
+
+type askResponse struct {
+	Question string   `json:"question"`
+	Answer   string   `json:"answer"`
+	Tags     []string `json:"tags"`
+}
+
+// askSystemPrompt asks the model for a polished Markdown explanation plus
+// suggested tags, suitable for human review before being committed to the
+// knowledge base. The "think step-by-step" nudge gives non-reasoning models
+// some quality lift; providers that natively support reasoning tokens can
+// also benefit when the Provider interface learns to plumb that flag through.
+const askSystemPrompt = `You are a careful technical writer helping the user capture knowledge for their personal knowledge base.
+
+The user is asking because they want to understand and learn the concept themselves — they will read the answer, possibly edit it, and save it as study notes for future reference. Write for an intelligent reader who is encountering this concept fresh: build the explanation up from what they already plausibly know, and pause to define any prerequisite term, jargon, or related concept that someone new to the area would not yet understand. Inline definitions are usually better than forward references.
+
+For the user's question, produce two outputs:
+
+1. ` + "`answer`" + ` — a clear, well-structured Markdown explanation suitable for later reference. Aim for the level of a senior engineer briefing a teammate who is new to the topic: accurate, concrete, with small examples where they help. The first non-blank line should be a Markdown heading naming the concept. No preamble, no meta-commentary, no "Here is an explanation of…".
+
+2. ` + "`tags`" + ` — 1 to 5 short lowercase tags suitable for cataloging this knowledge in a tag-indexed knowledge base. Prefer common, reusable tags (e.g. "golang", "concurrency", "kubernetes") over hyper-specific ones. Use single words or hyphenated multi-words; no spaces.
+
+Think step-by-step internally before composing your reply.
+
+If the question is genuinely unanswerable, set ` + "`answer`" + ` to a brief one-paragraph Markdown explanation of why, and ` + "`tags`" + ` to an empty array.`
+
+var askSchema = llm.Schema{
+	Name:        "knowledge_draft",
+	Description: "A drafted Markdown explanation with suggested tags for a knowledge base.",
+	Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"answer": map[string]any{
+				"type":        "string",
+				"description": "Markdown explanation. First non-blank line is a Markdown heading naming the concept.",
+			},
+			"tags": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"maxItems":    5,
+				"description": "1–5 short lowercase tag strings (single word or hyphenated). Empty array if the question is unanswerable.",
+			},
+		},
+		"required":             []string{"answer", "tags"},
+		"additionalProperties": false,
+	},
+}
+
+// PostAsk asks the configured LLM to draft a Markdown explanation and tag
+// suggestions for the supplied question. The response is intended for human
+// review in a client (e.g. the macOS app) before the user decides whether to
+// POST /content it. This endpoint does not store anything.
+func (h *Handler) PostAsk(w http.ResponseWriter, r *http.Request) {
+	var req askRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	question := strings.TrimSpace(req.Question)
+	if question == "" {
+		h.writeError(w, http.StatusBadRequest, "question must not be empty")
+		return
+	}
+	if h.llm == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "LLM provider is not configured")
+		return
+	}
+
+	h.logger.Info("received POST /ask request",
+		"question_len", len(question),
+		"reasoning_budget", h.askReasoningBudget)
+
+	var opts []llm.CallOption
+	if h.askReasoningBudget > 0 {
+		opts = append(opts, llm.WithReasoningBudget(h.askReasoningBudget))
+	}
+	raw, err := h.llm.CompleteStructured(r.Context(), askSystemPrompt, question, askSchema, opts...)
+	if err != nil {
+		h.logger.Error("ask LLM call failed", "error", err)
+		h.writeError(w, http.StatusBadGateway, "LLM call failed: "+err.Error())
+		return
+	}
+
+	var parsed struct {
+		Answer string   `json:"answer"`
+		Tags   []string `json:"tags"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		h.logger.Error("ask LLM returned malformed JSON", "error", err, "raw", raw)
+		h.writeError(w, http.StatusBadGateway, "LLM returned malformed JSON: "+err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, askResponse{
+		Question: question,
+		Answer:   strings.TrimSpace(parsed.Answer),
+		Tags:     cleanTags(parsed.Tags),
+	})
+}
+
+// cleanTags trims whitespace from each tag and drops empties, leaving the rest
+// (case, punctuation) untouched so the human sees what the model proposed and
+// can edit before posting. Returns a non-nil empty slice so the JSON field
+// serializes as [] rather than null.
+func cleanTags(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, t := range in {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // ── PUT /content ─────────────────────────────────────────────────────────────
