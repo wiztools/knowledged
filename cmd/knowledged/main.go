@@ -22,11 +22,12 @@ import (
 
 func main() {
 	repoPath := flag.String("repo", "", "path to the knowledge Git repository (required)")
-	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic, jan)")
+	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic, openai, jan)")
 	model := flag.String("model", "", "LLM model name (defaults to provider-specific default when unset)")
 	port := flag.String("port", "9090", "HTTP listen port")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
 	janURL := flag.String("jan-url", "http://localhost:8080", "Jan server base URL")
+	openaiURL := flag.String("openai-url", "https://api.openai.com", "OpenAI API base URL (override for Azure OpenAI or OpenAI-compatible gateways)")
 	pushOriginEvery := flag.Duration("push-origin-every", 0, "if greater than zero, periodically push the current branch to origin from the single git worker (for example: 24h)")
 	askReasoningBudget := flag.Int("ask-reasoning-budget", 2000, "thinking-token budget for POST /ask. Enables Anthropic extended thinking, Ollama think=true, or Jan reasoning_effort on supporting models; pass 0 to disable")
 	flag.Parse()
@@ -78,6 +79,20 @@ func main() {
 		logger.Info("LLM provider initialized",
 			"provider", "anthropic",
 			"model", *model)
+	case "openai":
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			logger.Error("OPENAI_API_KEY environment variable is not set")
+			os.Exit(1)
+		}
+		if *model == "" {
+			*model = "gpt-5.5"
+		}
+		provider = llm.NewOpenAI(*openaiURL, apiKey, *model, logger)
+		logger.Info("LLM provider initialized",
+			"provider", "openai",
+			"url", *openaiURL,
+			"model", *model)
 	case "jan":
 		// Jan uses whatever model is currently loaded in the server; the model
 		// field in the request is ignored by Jan's OpenAI-compatible endpoint.
@@ -92,7 +107,7 @@ func main() {
 			"model", modelDisplay)
 	default:
 		logger.Error("unknown LLM provider", "provider", *providerName,
-			"supported", []string{"ollama", "anthropic", "jan"})
+			"supported", []string{"ollama", "anthropic", "openai", "jan"})
 		os.Exit(1)
 	}
 

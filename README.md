@@ -35,9 +35,11 @@ Every write is a real Git commit. Crash recovery works by scanning the commit lo
 ## Requirements
 
 - Go 1.22+
-- An LLM provider — either:
+- An LLM provider — one of:
   - [Ollama](https://ollama.com) running locally, with a model pulled (e.g. `ollama pull mistral-small3.1`), **or**
-  - An [Anthropic API key](https://console.anthropic.com/) set in the environment
+  - An [Anthropic API key](https://console.anthropic.com/) set in the environment, **or**
+  - An [OpenAI API key](https://platform.openai.com/) set in the environment, **or**
+  - A [Jan](https://jan.ai/) server running locally (OpenAI-compatible, no key)
 
 ## Build
 
@@ -70,6 +72,23 @@ export ANTHROPIC_API_KEY=sk-ant-...
 > The `ANTHROPIC_API_KEY` environment variable is the only supported way to supply the key.
 > It is never logged or written to disk.
 
+**OpenAI:**
+```sh
+export OPENAI_API_KEY=sk-...
+./knowledged \
+  --repo        /path/to/knowledge-repo \
+  --llm-provider openai \
+  --model       gpt-5.5 \
+  --port        9090
+```
+
+> The `OPENAI_API_KEY` environment variable is the only supported way to supply the key.
+> It is never logged or written to disk.
+> Use `--openai-url` to target Azure OpenAI or an OpenAI-compatible gateway (LiteLLM, OpenRouter, etc.).
+> Structured output (used by `POST /ask` and the organizer) requires a model that supports
+> `response_format = json_schema` with `strict: true` — `gpt-4.1-mini`, `gpt-4o-mini`,
+> `gpt-4o-2024-08-06` and later, or any reasoning model.
+
 **`--repo` behavior:**
 
 | Directory state | Action |
@@ -86,9 +105,11 @@ On first init the server creates `.gitignore` (excludes `/.knowledged/`) and an 
 | Flag | Default | Description |
 |---|---|---|
 | `--repo` | *(required)* | Path to the knowledge Git repository |
-| `--llm-provider` | `ollama` | LLM backend: `ollama` or `anthropic` |
-| `--model` | `mistral-small3.1` / `claude-sonnet-4-6` | Model name (default depends on provider) |
+| `--llm-provider` | `ollama` | LLM backend: `ollama`, `anthropic`, `openai`, or `jan` |
+| `--model` | provider-specific | Model name. Defaults: `mistral-small3.1` (ollama), `claude-sonnet-4-6` (anthropic), `gpt-5.5` (openai), `<server-configured>` (jan) |
 | `--ollama-url` | `http://localhost:11434` | Ollama server URL (Ollama provider only) |
+| `--openai-url` | `https://api.openai.com` | OpenAI API base URL — override for Azure OpenAI or OpenAI-compatible gateways |
+| `--jan-url` | `http://localhost:8080` | Jan server URL (Jan provider only) |
 | `--port` | `9090` | HTTP listen port |
 | `--push-origin-every` | `0` | If greater than zero, push the current branch to `origin` on that cadence using persisted state in `.knowledged/` |
 | `--ask-reasoning-budget` | `2000` | Thinking-token budget for `POST /ask`. Enables provider-native chain-of-thought on supporting models; pass `0` to disable |
@@ -98,6 +119,7 @@ On first init the server creates `.gitignore` (excludes `/.knowledged/`) and an 
 | Variable | Required for |
 |---|---|
 | `ANTHROPIC_API_KEY` | `--llm-provider anthropic` |
+| `OPENAI_API_KEY` | `--llm-provider openai` |
 
 ## CLI client (`kc`)
 
@@ -358,6 +380,8 @@ internal/
   llm/provider.go      Provider interface
   llm/ollama.go        Ollama backend
   llm/anthropic.go     Anthropic backend
+  llm/openai.go        OpenAI backend
+  llm/jan.go           Jan (OpenAI-compatible) backend
   store/store.go       go-git wrapper
   store/index.go       INDEX.md helpers
   organizer/           LLM placement + execution

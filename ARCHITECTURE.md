@@ -48,7 +48,7 @@
 | `internal/queue` | Durable job queue backed by `.knowledged/queue.json`; single worker goroutine |
 | `internal/organizer` | Constructs LLM prompts, parses decisions, drives store operations |
 | `internal/store` | go-git wrapper; file I/O, staging, committing, git log scan |
-| `internal/llm` | `Provider` interface + Ollama implementation |
+| `internal/llm` | `Provider` interface + Ollama, Anthropic, OpenAI, and Jan implementations |
 
 ---
 
@@ -187,6 +187,17 @@ The organizer and query engine depend only on this interface. Adding a new backe
 - Payload: `{ model, max_tokens: 4096, system, messages: [{role: "user", content}] }`
 - HTTP timeout: 120 s
 - Response: `content[0].text` string extracted from the JSON body
+- API key is read once at startup and never logged or persisted
+
+### OpenAI transport (`llm/openai.go`)
+
+- Endpoint: `POST <openai-url>/v1/chat/completions` (default base `https://api.openai.com`; configurable via `--openai-url` for Azure OpenAI or OpenAI-compatible gateways)
+- Headers: `Authorization: Bearer <key>` (from `OPENAI_API_KEY` env var)
+- Payload: `{ model, messages: [{role: "system"}, {role: "user"}], response_format?, reasoning_effort? }`
+- Structured output uses `response_format = {type: "json_schema", json_schema: {name, schema, strict: true}}` — requires `gpt-4.1-mini`, `gpt-4o-mini`, `gpt-4o-2024-08-06`+, or any reasoning model
+- `WithReasoningBudget` maps to `reasoning_effort` ("low" ≤ 512 tokens, "medium" ≤ 2048, "high" above); non-reasoning models silently ignore the field
+- HTTP timeout: 120 s
+- Response: `choices[0].message.content` string extracted from the JSON body
 - API key is read once at startup and never logged or persisted
 
 ### Organizer prompt contract
