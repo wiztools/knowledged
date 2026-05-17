@@ -153,6 +153,34 @@ func TestAnthropic_Complete_ReasoningBudgetClamped(t *testing.T) {
 	}
 }
 
+// TestAnthropic_CompleteStructured_ReasoningSkippedForForcedTool guards the
+// runtime constraint that the Messages API rejects thinking when tool_choice
+// forces a tool: "Thinking may not be enabled when tool_choice forces tool
+// use." Caught in the wild while wiring /ask to extended thinking — without
+// this skip, every /ask call against Anthropic 400s.
+func TestAnthropic_CompleteStructured_ReasoningSkippedForForcedTool(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","name":"x","input":{"k":"v"}}]}`))
+	}))
+	defer srv.Close()
+	withAnthropicURL(t, srv)
+
+	a := NewAnthropic("sk-test", "claude-test", newSilentLogger())
+	schema := Schema{Name: "x", Schema: map[string]any{"type": "object"}}
+	if _, err := a.CompleteStructured(context.Background(), "s", "u", schema, WithReasoningBudget(2048)); err != nil {
+		t.Fatalf("CompleteStructured: %v", err)
+	}
+	if _, present := got["thinking"]; present {
+		t.Errorf("thinking must be omitted when tool_choice forces a tool (Anthropic 400s otherwise), got %v", got["thinking"])
+	}
+	if _, present := got["tool_choice"]; !present {
+		t.Errorf("expected tool_choice in payload — test prerequisite, got: %v", got)
+	}
+}
+
 func TestAnthropic_Complete_NoBudgetOmitsThinking(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

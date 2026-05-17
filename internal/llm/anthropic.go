@@ -105,7 +105,7 @@ func (a *Anthropic) Complete(ctx context.Context, system, user string, opts ...C
 		System:    system,
 		Messages:  []anthropicMessage{{Role: "user", Content: user}},
 	}
-	applyAnthropicOptions(&req, opts)
+	a.applyOptions(&req, opts)
 	resp, err := a.send(ctx, req)
 	if err != nil {
 		return "", err
@@ -140,7 +140,7 @@ func (a *Anthropic) CompleteStructured(ctx context.Context, system, user string,
 		}},
 		ToolChoice: &anthropicToolChoice{Type: "tool", Name: schema.Name},
 	}
-	applyAnthropicOptions(&req, opts)
+	a.applyOptions(&req, opts)
 	resp, err := a.send(ctx, req)
 	if err != nil {
 		return "", err
@@ -153,11 +153,24 @@ func (a *Anthropic) CompleteStructured(ctx context.Context, system, user string,
 	return "", fmt.Errorf("Anthropic API returned no tool_use block for %q", schema.Name)
 }
 
-// applyAnthropicOptions translates the generic CallOption set into Messages
-// API request fields. Currently only the reasoning budget is honored.
-func applyAnthropicOptions(req *anthropicRequest, opts []CallOption) {
+// applyOptions translates the generic CallOption set into Messages API
+// request fields. Currently only the reasoning budget is honored.
+//
+// Special case: the Messages API rejects extended thinking when tool_choice
+// forces a specific tool ("Thinking may not be enabled when tool_choice
+// forces tool use."). CompleteStructured always forces tool_use to guarantee
+// the structured-output shape, so on that path we silently skip thinking
+// rather than 400 the caller. The structured guarantee wins; callers that
+// want thinking on Anthropic specifically should use plain Complete with a
+// JSON-shaped prompt instead.
+func (a *Anthropic) applyOptions(req *anthropicRequest, opts []CallOption) {
 	budget := ResolveReasoningBudget(opts)
 	if budget <= 0 {
+		return
+	}
+	if req.ToolChoice != nil {
+		a.logger.Debug("anthropic: reasoning skipped — extended thinking is incompatible with forced tool_use",
+			"requested_budget", budget)
 		return
 	}
 	if budget < anthropicMinThinkingBudget {

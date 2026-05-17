@@ -278,10 +278,15 @@ the answer and tags become a stored document via `POST /content`.
 Internally uses structured output (Anthropic tool_use / Ollama `format` /
 Jan json_schema) so the `tags` and `answer` fields are guaranteed
 to be present. When `--ask-reasoning-budget` is non-zero (default 2000),
-the call also opts into provider-native chain-of-thought — Anthropic
-extended thinking, Ollama `think=true`, or Jan `reasoning_effort` —
-which improves answer quality on supporting models and is silently
-ignored elsewhere.
+the call also opts into provider-native chain-of-thought — Ollama
+`think=true` or Jan `reasoning_effort` — which improves answer quality
+on supporting models and is silently ignored elsewhere.
+
+> **Anthropic note:** the Messages API rejects extended thinking when
+> `tool_choice` forces a specific tool, which `CompleteStructured` does
+> to guarantee the JSON shape. Reasoning is therefore silently skipped
+> on the Anthropic backend for `/ask` (the structured-output guarantee
+> wins). The budget still applies to other backends.
 
 ```json
 // Request
