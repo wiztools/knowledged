@@ -79,6 +79,42 @@ func TestOllama_CompleteStructured_SendsFormat(t *testing.T) {
 	}
 }
 
+func TestOllama_Complete_WithReasoningBudgetSetsThink(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true}`))
+	}))
+	defer srv.Close()
+
+	o := NewOllama(srv.URL, "test-model", newSilentLogger())
+	if _, err := o.Complete(context.Background(), "s", "u", WithReasoningBudget(1)); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got["think"] != true {
+		t.Errorf("think field should be true when budget>0, got %v", got["think"])
+	}
+}
+
+func TestOllama_Complete_NoBudgetOmitsThink(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true}`))
+	}))
+	defer srv.Close()
+
+	o := NewOllama(srv.URL, "test-model", newSilentLogger())
+	if _, err := o.Complete(context.Background(), "s", "u"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, present := got["think"]; present {
+		t.Errorf("think must be omitted when no reasoning budget supplied, got %v", got["think"])
+	}
+}
+
 func TestOllama_CompleteStructured_NilSchemaErrors(t *testing.T) {
 	o := NewOllama("http://unused", "test-model", newSilentLogger())
 	_, err := o.CompleteStructured(context.Background(), "s", "u", Schema{Name: "x"})

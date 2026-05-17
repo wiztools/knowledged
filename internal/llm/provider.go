@@ -3,10 +3,15 @@ package llm
 import "context"
 
 // Provider is the interface every LLM backend must implement.
+//
+// Both methods accept variadic CallOptions for optional features (e.g.
+// WithReasoningBudget). Options unknown to a given backend are silently
+// ignored so callers can request capabilities without first checking
+// which provider is wired in.
 type Provider interface {
 	// Complete sends a system prompt and a user message and returns the
 	// model's free-form text response.
-	Complete(ctx context.Context, system, user string) (string, error)
+	Complete(ctx context.Context, system, user string, opts ...CallOption) (string, error)
 
 	// CompleteStructured asks the model for a JSON response that conforms
 	// to the given schema. The returned string is the JSON body — guaranteed
@@ -14,7 +19,7 @@ type Provider interface {
 	// supports (Anthropic tool_use, Ollama `format`, OpenAI json_schema).
 	// Callers can json.Unmarshal the result without fence-stripping or
 	// "model returned prose" defenses.
-	CompleteStructured(ctx context.Context, system, user string, schema Schema) (string, error)
+	CompleteStructured(ctx context.Context, system, user string, schema Schema, opts ...CallOption) (string, error)
 }
 
 // Schema describes a JSON Schema object plus the metadata some providers need

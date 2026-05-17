@@ -30,7 +30,7 @@ Every write is a real Git commit. Crash recovery works by scanning the commit lo
 | Binary | Purpose |
 |---|---|
 | `knowledged` | HTTP server — stores content, serves queries |
-| `kc` | CLI client — `post`, `get`, `edit`, `delete`, `job` subcommands |
+| `kc` | CLI client — `post`, `get`, `edit`, `delete`, `job`, `recent`, `ask` subcommands |
 
 ## Requirements
 
@@ -91,6 +91,7 @@ On first init the server creates `.gitignore` (excludes `/.knowledged/`) and an 
 | `--ollama-url` | `http://localhost:11434` | Ollama server URL (Ollama provider only) |
 | `--port` | `9090` | HTTP listen port |
 | `--push-origin-every` | `0` | If greater than zero, push the current branch to `origin` on that cadence using persisted state in `.knowledged/` |
+| `--ask-reasoning-budget` | `2000` | Thinking-token budget for `POST /ask`. Enables provider-native chain-of-thought on supporting models; pass `0` to disable |
 
 **Environment variables:**
 
@@ -192,10 +193,37 @@ path   : tech/go/goroutines.md
 
 Status values: `queued` | `processing` | `done` | `failed`
 
-### Global flag
+### `kc ask` — draft an answer from the LLM
+
+Sends a single-turn question to the configured LLM. The Markdown answer
+is printed to stdout and the suggested tags to stderr — safe to pipe
+into `kc post` without contaminating the content. Nothing is stored
+until you do that.
+
+```sh
+kc ask --question "what are goroutines?"
+# stdout: the Markdown answer
+# stderr: tags: golang, concurrency
+
+# Draft and store in one shot (review the draft first in practice)
+kc ask --question "what are goroutines?" | kc post --hint golang
+
+# Full structured response for scripting
+kc --json ask --question "what are goroutines?" | jq '{answer, tags}'
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--question` | | The question to ask (required) |
+
+### Global flags
 
 ```sh
 kc --server http://10.0.0.5:9000 post --content "..."
+
+# --json applies to any subcommand and emits the raw server response
+kc --json post --content "..." --wait    # → final job JSON after polling
+kc --json recent | jq '.posts[].path'
 ```
 
 ## HTTP API
@@ -240,6 +268,36 @@ kc --server http://10.0.0.5:9000 post --content "..."
 | `query=<text>` | `{ "query": "...", "sources": [...], "answer": "..." }` |
 | `query=<text>&mode=raw` | `[{ "path": "...", "content": "..." }, ...]` |
 
+### `POST /ask`
+
+Drafts a Markdown explanation and suggested tags from the configured LLM.
+Stores nothing — intended for clients that want to prefill a
+"review-and-post" form. The human is always the one who decides whether
+the answer and tags become a stored document via `POST /content`.
+
+Internally uses structured output (Anthropic tool_use / Ollama `format` /
+Jan json_schema) so the `tags` and `answer` fields are guaranteed
+to be present. When `--ask-reasoning-budget` is non-zero (default 2000),
+the call also opts into provider-native chain-of-thought — Anthropic
+extended thinking, Ollama `think=true`, or Jan `reasoning_effort` —
+which improves answer quality on supporting models and is silently
+ignored elsewhere.
+
+```json
+// Request
+{ "question": "what are goroutines?" }
+
+// Response 200
+{
+  "question": "what are goroutines?",
+  "answer":   "## Goroutines\n\n...",
+  "tags":     ["golang", "concurrency"]
+}
+```
+
+`tags` is always present and is the empty array `[]` when the model
+declines to suggest any (e.g. the question is unanswerable).
+
 ## Repository layout
 
 ```
@@ -272,11 +330,17 @@ Implement the `llm.Provider` interface:
 
 ```go
 type Provider interface {
-    Complete(ctx context.Context, system, user string) (string, error)
+    Complete(ctx context.Context, system, user string, opts ...CallOption) (string, error)
+    CompleteStructured(ctx context.Context, system, user string, schema Schema, opts ...CallOption) (string, error)
 }
 ```
 
 Pass your implementation to `organizer.New()` and `api.NewHandler()`. No other changes needed.
+
+Backends are free to ignore options they don't understand. The only
+option today is `llm.WithReasoningBudget(n)`, which `POST /ask` forwards
+when `--ask-reasoning-budget` is non-zero — see each provider's
+implementation for how it maps to the backend's native reasoning knob.
 
 ## Project layout
 
