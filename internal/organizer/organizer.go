@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/wiztools/knowledged/internal/llm"
 	"github.com/wiztools/knowledged/internal/store"
@@ -176,6 +177,9 @@ type Decision struct {
 	TargetPath   string
 	Title        string
 	Description  string
+	Tags         []string
+	Created      time.Time
+	Modified     time.Time
 	Refactors    []Refactor
 	UpdatedIndex string
 }
@@ -271,6 +275,7 @@ func (o *Organizer) Decide(ctx context.Context, content, hint string, tags []str
 		TargetPath:   placement.TargetPath,
 		Title:        placement.Title,
 		Description:  placement.Description,
+		Tags:         append([]string(nil), tags...),
 		Refactors:    placement.Refactors,
 		UpdatedIndex: mergedIndex,
 	}, nil
@@ -292,7 +297,26 @@ func (o *Organizer) Execute(ctx context.Context, jobID, content string, decision
 	}
 
 	o.logger.Info("writing content file", "path", decision.TargetPath)
-	if err := o.store.WriteFile(decision.TargetPath, content); err != nil {
+	body, err := store.StripFrontmatter(content)
+	if err != nil {
+		return fmt.Errorf("parsing inbound content frontmatter: %w", err)
+	}
+	created := decision.Created
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	modified := decision.Modified
+	if modified.IsZero() {
+		modified = created
+	}
+	rendered := store.RenderFrontmatter(store.Frontmatter{
+		Title:       decision.Title,
+		Description: decision.Description,
+		Tags:        decision.Tags,
+		Created:     created,
+		Modified:    modified,
+	}, body)
+	if err := o.store.WriteFile(decision.TargetPath, rendered); err != nil {
 		return fmt.Errorf("writing content: %w", err)
 	}
 

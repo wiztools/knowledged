@@ -204,10 +204,11 @@ func cleanTags(in []string) []string {
 // ── PUT /content ─────────────────────────────────────────────────────────────
 
 type editContentRequest struct {
-	Path        string `json:"path"`
-	Content     string `json:"content"`
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description,omitempty"`
+	Path        string   `json:"path"`
+	Content     string   `json:"content"`
+	Title       string   `json:"title,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // PutContent enqueues an edit request and returns a job ID immediately.
@@ -221,8 +222,9 @@ func (h *Handler) PutContent(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "path must not be empty")
 		return
 	}
-	if strings.TrimSpace(req.Content) == "" {
-		h.writeError(w, http.StatusBadRequest, "content must not be empty")
+	hasMetadataUpdate := strings.TrimSpace(req.Title) != "" || strings.TrimSpace(req.Description) != "" || len(cleanTags(req.Tags)) > 0
+	if strings.TrimSpace(req.Content) == "" && !hasMetadataUpdate {
+		h.writeError(w, http.StatusBadRequest, "content or metadata update must not be empty")
 		return
 	}
 	cleanPath, err := store.CleanContentPath(req.Path)
@@ -235,7 +237,7 @@ func (h *Handler) PutContent(w http.ResponseWriter, r *http.Request) {
 		"path", cleanPath,
 		"content_len", len(req.Content))
 
-	job, err := h.queue.EnqueueEdit(cleanPath, req.Content, req.Title, req.Description)
+	job, err := h.queue.EnqueueEdit(cleanPath, req.Content, req.Title, req.Description, cleanTags(req.Tags))
 	if err != nil {
 		h.logger.Error("failed to enqueue edit job", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "failed to enqueue: "+err.Error())
@@ -603,6 +605,19 @@ func (h *Handler) GetRecentPosts(w http.ResponseWriter, r *http.Request) {
 	}
 	if entries == nil {
 		entries = []recentlog.Entry{}
+	}
+	for i := range entries {
+		content, err := h.store.ReadFile(entries[i].Path)
+		if err != nil {
+			h.logger.Warn("recent post file read failed", "path", entries[i].Path, "error", err)
+			continue
+		}
+		fm, _, err := store.ParseFrontmatter(content)
+		if err != nil {
+			h.logger.Warn("recent post frontmatter parse failed", "path", entries[i].Path, "error", err)
+			continue
+		}
+		entries[i].Tags = fm.Tags
 	}
 	h.writeJSON(w, http.StatusOK, recentPostsResponse{Posts: entries})
 }

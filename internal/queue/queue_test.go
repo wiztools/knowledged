@@ -147,7 +147,7 @@ func TestEnqueueDelete_Retrievable(t *testing.T) {
 func TestEnqueueEdit_JobFields(t *testing.T) {
 	q, _ := newTestQueue(t)
 
-	job, err := q.EnqueueEdit("tech/go/goroutines.md", "updated", "Goroutines", "runtime notes")
+	job, err := q.EnqueueEdit("tech/go/goroutines.md", "updated", "Goroutines", "runtime notes", nil)
 	if err != nil {
 		t.Fatalf("EnqueueEdit: %v", err)
 	}
@@ -172,7 +172,14 @@ func TestEnqueueEdit_JobFields(t *testing.T) {
 func TestExecuteEdit_UpdatesFileIndexAndCommit(t *testing.T) {
 	q, st := newTestQueue(t)
 
-	if err := st.WriteFile("tech/go/goroutines.md", "old content"); err != nil {
+	existing := store.RenderFrontmatter(store.Frontmatter{
+		Title:       "Go Goroutines",
+		Description: "concurrency primitives",
+		Tags:        []string{},
+		Created:     time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		Modified:    time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+	}, "old content")
+	if err := st.WriteFile("tech/go/goroutines.md", existing); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	index := `# Index
@@ -188,7 +195,7 @@ func TestExecuteEdit_UpdatesFileIndexAndCommit(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	job, err := q.EnqueueEdit("tech/go/goroutines.md", "new content", "Go Scheduler", "updated runtime notes")
+	job, err := q.EnqueueEdit("tech/go/goroutines.md", "new content", "Go Scheduler", "updated runtime notes", nil)
 	if err != nil {
 		t.Fatalf("EnqueueEdit: %v", err)
 	}
@@ -202,8 +209,15 @@ func TestExecuteEdit_UpdatesFileIndexAndCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if got != "new content" {
-		t.Fatalf("expected edited content, got %q", got)
+	fm, body, err := store.ParseFrontmatter(got)
+	if err != nil {
+		t.Fatalf("ParseFrontmatter: %v", err)
+	}
+	if fm.Title != "Go Scheduler" || fm.Description != "updated runtime notes" {
+		t.Fatalf("frontmatter = %#v", fm)
+	}
+	if body != "new content" {
+		t.Fatalf("expected edited body, got %q", body)
 	}
 	gotIndex, err := st.ReadIndex()
 	if err != nil {
@@ -221,10 +235,57 @@ func TestExecuteEdit_UpdatesFileIndexAndCommit(t *testing.T) {
 	}
 }
 
+func TestExecuteEdit_MetadataOnlyPreservesBodyAndUpdatesTags(t *testing.T) {
+	q, st := newTestQueue(t)
+
+	created := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	existing := store.RenderFrontmatter(store.Frontmatter{
+		Title:       "Old Title",
+		Description: "Old description",
+		Tags:        []string{"old"},
+		Created:     created,
+		Modified:    created,
+	}, "# Old Title\n\nBody.\n")
+	if err := st.WriteFile("notes/hello.md", existing); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := st.Commit("seed"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	job, err := q.EnqueueEdit("notes/hello.md", "", "New Title", "", []string{"new", "tag"})
+	if err != nil {
+		t.Fatalf("EnqueueEdit: %v", err)
+	}
+
+	q.executeEdit(context.Background(), job)
+
+	if job.Status != StatusDone {
+		t.Fatalf("expected edit job done, got %s: %s", job.Status, job.Error)
+	}
+	got, err := st.ReadFile("notes/hello.md")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	fm, body, err := store.ParseFrontmatter(got)
+	if err != nil {
+		t.Fatalf("ParseFrontmatter: %v", err)
+	}
+	if fm.Title != "New Title" || fm.Description != "Old description" {
+		t.Fatalf("frontmatter = %#v", fm)
+	}
+	if gotTags, want := strings.Join(fm.Tags, ","), "new,tag"; gotTags != want {
+		t.Fatalf("tags = %q, want %q", gotTags, want)
+	}
+	if body != "# Old Title\n\nBody.\n" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestExecuteEdit_MissingFileFails(t *testing.T) {
 	q, _ := newTestQueue(t)
 
-	job, err := q.EnqueueEdit("missing/file.md", "new content", "", "")
+	job, err := q.EnqueueEdit("missing/file.md", "new content", "", "", nil)
 	if err != nil {
 		t.Fatalf("EnqueueEdit: %v", err)
 	}

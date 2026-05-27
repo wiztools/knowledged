@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wiztools/knowledged/internal/llm"
 	"github.com/wiztools/knowledged/internal/queue"
@@ -157,7 +158,14 @@ func TestDeleteContent_EmptyPath(t *testing.T) {
 func TestPutContent_Returns202(t *testing.T) {
 	h, st := newTestHandler(t)
 
-	if err := st.WriteFile("notes/hello.md", "old"); err != nil {
+	existing := store.RenderFrontmatter(store.Frontmatter{
+		Title:       "Hello",
+		Description: "Existing note",
+		Tags:        []string{},
+		Created:     time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		Modified:    time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+	}, "old")
+	if err := st.WriteFile("notes/hello.md", existing); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if err := st.Commit("seed"); err != nil {

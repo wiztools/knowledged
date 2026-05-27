@@ -218,7 +218,7 @@ func (q *Queue) EnqueueDelete(path string) (*Job, error) {
 // EnqueueEdit appends a new edit job to the persistent queue and signals the
 // worker. The file at path is overwritten, with an optional INDEX.md entry
 // metadata update, in a single atomic git commit.
-func (q *Queue) EnqueueEdit(path, content, title, description string) (*Job, error) {
+func (q *Queue) EnqueueEdit(path, content, title, description string, tags []string) (*Job, error) {
 	cleanPath, err := store.CleanContentPath(path)
 	if err != nil {
 		return nil, err
@@ -231,6 +231,7 @@ func (q *Queue) EnqueueEdit(path, content, title, description string) (*Job, err
 		Path:        cleanPath,
 		Content:     content,
 		ContentHash: contentHash(content),
+		Tags:        append([]string(nil), tags...),
 		Title:       title,
 		Description: description,
 	}
@@ -496,6 +497,8 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 		}
 	}
 
+	decision.Created = job.Timestamp
+	decision.Modified = time.Now().UTC()
 	if err := q.organizer.Execute(ctx, job.ID, job.Content, decision); err != nil {
 		q.logger.Error("organizer execute failed", "job_id", job.ID, "error", err)
 		q.finalize(job, "", err)
@@ -509,7 +512,6 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 		e := recentlog.Entry{
 			JobID:     job.ID,
 			Path:      decision.TargetPath,
-			Tags:      job.Tags,
 			CreatedAt: job.Timestamp,
 		}
 		if err := q.recentLog.Append(e); err != nil {
@@ -553,9 +555,9 @@ func (q *Queue) executeDelete(ctx context.Context, job *Job) {
 // executeEdit overwrites a file and optionally updates its INDEX.md entry as a
 // single atomic git commit.
 func (q *Queue) executeEdit(ctx context.Context, job *Job) {
-	if strings.TrimSpace(job.Content) == "" {
-		err := fmt.Errorf("content must not be empty")
-		q.logger.Error("edit job failed — content is empty", "job_id", job.ID, "path", job.Path)
+	if strings.TrimSpace(job.Content) == "" && !hasEditMetadata(job) {
+		err := fmt.Errorf("content or metadata update must not be empty")
+		q.logger.Error("edit job failed — content and metadata are empty", "job_id", job.ID, "path", job.Path)
 		q.finalize(job, "", err)
 		return
 	}
@@ -566,7 +568,14 @@ func (q *Queue) executeEdit(ctx context.Context, job *Job) {
 		return
 	}
 
-	if err := q.store.WriteFile(job.Path, job.Content); err != nil {
+	contentToWrite, err := q.renderEditedContent(job)
+	if err != nil {
+		q.logger.Error("frontmatter render failed during edit", "job_id", job.ID, "path", job.Path, "error", err)
+		q.finalize(job, "", err)
+		return
+	}
+
+	if err := q.store.WriteFile(job.Path, contentToWrite); err != nil {
 		q.logger.Error("WriteFile failed during edit", "job_id", job.ID, "path", job.Path, "error", err)
 		q.finalize(job, "", err)
 		return
@@ -589,6 +598,48 @@ func (q *Queue) executeEdit(ctx context.Context, job *Job) {
 
 	q.logger.Info("edit job completed", "job_id", job.ID, "path", job.Path)
 	q.finalize(job, job.Path, nil)
+}
+
+func (q *Queue) renderEditedContent(job *Job) (string, error) {
+	existing, err := q.store.ReadFile(job.Path)
+	if err != nil {
+		return "", err
+	}
+	fm, existingBody, err := store.ParseFrontmatter(existing)
+	if err != nil {
+		return "", err
+	}
+
+	body := existingBody
+	if strings.TrimSpace(job.Content) != "" {
+		incomingBody, err := store.StripFrontmatter(job.Content)
+		if err != nil {
+			return "", err
+		}
+		body = incomingBody
+	}
+
+	if strings.TrimSpace(job.Title) != "" {
+		fm.Title = strings.TrimSpace(job.Title)
+	}
+	if strings.TrimSpace(job.Description) != "" {
+		fm.Description = strings.TrimSpace(job.Description)
+	}
+	if len(job.Tags) > 0 {
+		fm.Tags = append([]string(nil), job.Tags...)
+	}
+	if fm.Tags == nil {
+		fm.Tags = []string{}
+	}
+	if fm.Created.IsZero() {
+		fm.Created = job.Timestamp
+	}
+	fm.Modified = time.Now().UTC()
+	return store.RenderFrontmatter(fm, body), nil
+}
+
+func hasEditMetadata(job *Job) bool {
+	return strings.TrimSpace(job.Title) != "" || strings.TrimSpace(job.Description) != "" || len(job.Tags) > 0
 }
 
 // finalize marks a job terminal and updates .knowledged/queue.json:

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wiztools/knowledged/internal/llm"
 	"github.com/wiztools/knowledged/internal/store"
@@ -213,5 +214,45 @@ func TestDecide_EmptyIndex(t *testing.T) {
 	}
 	if !strings.Contains(llm.calls[0].user, "(none — INDEX.md has no sections yet)") {
 		t.Errorf("pass 1 prompt should mark empty index:\n%s", llm.calls[0].user)
+	}
+}
+
+func TestExecuteWritesFrontmatter(t *testing.T) {
+	org, _, st := newOrganizerWithIndex(t, seedIndex, nil)
+	created := time.Date(2026, 5, 27, 10, 0, 0, 0, time.UTC)
+	modified := time.Date(2026, 5, 27, 11, 0, 0, 0, time.UTC)
+	decision := &Decision{
+		TargetPath:   "tech/go/generics.md",
+		Title:        "Go Generics",
+		Description:  "Type parameters in Go",
+		Tags:         []string{"go", "language"},
+		Created:      created,
+		Modified:     modified,
+		UpdatedIndex: seedIndex,
+	}
+
+	if err := org.Execute(context.Background(), "job-123", "# Go Generics\n\nBody.\n", decision); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	content, err := st.ReadFile("tech/go/generics.md")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	fm, body, err := store.ParseFrontmatter(content)
+	if err != nil {
+		t.Fatalf("ParseFrontmatter: %v", err)
+	}
+	if fm.Title != decision.Title || fm.Description != decision.Description {
+		t.Fatalf("frontmatter mismatch: %#v", fm)
+	}
+	if got, want := strings.Join(fm.Tags, ","), "go,language"; got != want {
+		t.Fatalf("tags = %q, want %q", got, want)
+	}
+	if fm.Created.Format(time.RFC3339) != created.Format(time.RFC3339) {
+		t.Fatalf("created = %s, want %s", fm.Created, created)
+	}
+	if body != "# Go Generics\n\nBody.\n" {
+		t.Fatalf("body = %q", body)
 	}
 }

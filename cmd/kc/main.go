@@ -107,19 +107,10 @@ Flags:`)
 		fatal(logger, "reading content", fmt.Errorf("content is empty"))
 	}
 
-	var tagList []string
-	if *tags != "" {
-		for _, t := range strings.Split(*tags, ",") {
-			if t = strings.TrimSpace(t); t != "" {
-				tagList = append(tagList, t)
-			}
-		}
-	}
-
 	reqBody := map[string]any{
 		"content": body,
 		"hint":    *hint,
-		"tags":    tagList,
+		"tags":    parseCommaList(*tags),
 	}
 
 	if asJSON {
@@ -250,6 +241,7 @@ Flags:`)
 	file := fs.String("file", "", "read replacement content from this file path")
 	title := fs.String("title", "", "optional INDEX.md title update")
 	description := fs.String("description", "", "optional INDEX.md description update")
+	tags := fs.String("tags", "", "comma-separated replacement tags")
 	wait := fs.Bool("wait", false, "poll until the job completes")
 	timeout := fs.Int("timeout", 120, "seconds to wait when --wait is set")
 
@@ -260,19 +252,25 @@ Flags:`)
 		fs.Usage()
 		os.Exit(1)
 	}
-	body, err := resolveContent(*content, *file)
-	if err != nil {
-		fatal(logger, "reading content", err)
-	}
-	if strings.TrimSpace(body) == "" {
-		fatal(logger, "reading content", fmt.Errorf("content is empty"))
+	body := ""
+	metadataOnly := *content == "" && *file == "" && (*title != "" || *description != "" || *tags != "")
+	if !metadataOnly {
+		var err error
+		body, err = resolveContent(*content, *file)
+		if err != nil {
+			fatal(logger, "reading content", err)
+		}
+		if strings.TrimSpace(body) == "" {
+			fatal(logger, "reading content", fmt.Errorf("content is empty"))
+		}
 	}
 
-	reqBody := map[string]string{
+	reqBody := map[string]any{
 		"path":        *path,
 		"content":     body,
 		"title":       *title,
 		"description": *description,
+		"tags":        parseCommaList(*tags),
 	}
 
 	if asJSON {
@@ -497,6 +495,19 @@ func printRecentPosts(posts []recentEntry) {
 		fmt.Printf("%-11s: %s\n", "created_at", createdAt)
 		fmt.Printf("%-11s: %s\n", "job_id", p.JobID)
 	}
+}
+
+func parseCommaList(raw string) []string {
+	var out []string
+	if raw == "" {
+		return out
+	}
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // ── ask ──────────────────────────────────────────────────────────────────────
