@@ -301,15 +301,15 @@ func TestGetTags_RebuildsAndReturnsCounts(t *testing.T) {
 	}
 }
 
-func TestGetContent_ByTagReturnsMetadataOrRawDocs(t *testing.T) {
+func TestSearch_ByTagReturnsMetadataOrRawDocs(t *testing.T) {
 	h, st := newTestHandlerWithTags(t)
 	seedTaggedNote(t, st, "go/a.md", "A", []string{"go", "api"}, time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC))
 	seedTaggedNote(t, st, "go/b.md", "B", []string{"go"}, time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC))
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/content?"+url.Values{"tags": {"go,api"}, "match": {"all"}}.Encode(), nil)
+		"/search?"+url.Values{"tags": {"go,api"}, "match": {"all"}}.Encode(), nil)
 	rec := httptest.NewRecorder()
-	h.GetContent(rec, req)
+	h.Search(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -323,9 +323,9 @@ func TestGetContent_ByTagReturnsMetadataOrRawDocs(t *testing.T) {
 	}
 
 	rawReq := httptest.NewRequest(http.MethodGet,
-		"/content?"+url.Values{"tag": {"api"}, "mode": {"raw"}}.Encode(), nil)
+		"/search?"+url.Values{"tag": {"api"}, "mode": {"raw"}}.Encode(), nil)
 	rawRec := httptest.NewRecorder()
-	h.GetContent(rawRec, rawReq)
+	h.Search(rawRec, rawReq)
 	if rawRec.Code != http.StatusOK {
 		t.Fatalf("expected raw 200, got %d — body: %s", rawRec.Code, rawRec.Body.String())
 	}
@@ -352,9 +352,9 @@ func TestSynthesis_TwoPassRelevance_ProseAnswer(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/content?"+url.Values{"query": {"what are goroutines"}}.Encode(), nil)
+	req := httptest.NewRequest(http.MethodGet, "/answer?"+url.Values{"query": {"what are goroutines"}}.Encode(), nil)
 	rec := httptest.NewRecorder()
-	h.GetContent(rec, req)
+	h.Answer(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -413,9 +413,9 @@ func TestSynthesis_NeedFullEscapeHatch(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/content?"+url.Values{"query": {"what's at the end"}}.Encode(), nil)
+	req := httptest.NewRequest(http.MethodGet, "/answer?"+url.Values{"query": {"what's at the end"}}.Encode(), nil)
 	rec := httptest.NewRecorder()
-	h.GetContent(rec, req)
+	h.Answer(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -456,9 +456,9 @@ func TestSynthesis_NoCandidatesFromRoute(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/content?"+url.Values{"query": {"x"}}.Encode(), nil)
+	req := httptest.NewRequest(http.MethodGet, "/answer?"+url.Values{"query": {"x"}}.Encode(), nil)
 	rec := httptest.NewRecorder()
-	h.GetContent(rec, req)
+	h.Answer(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -473,7 +473,7 @@ func TestSynthesis_NoCandidatesFromRoute(t *testing.T) {
 	}
 }
 
-func TestSynthesis_RawMode_StopsAfterPick(t *testing.T) {
+func TestSearch_QueryRawMode_StopsAfterPick(t *testing.T) {
 	llm := &fakeLLM{replies: []string{
 		`{"sections":["Go"]}`,
 		`{"paths":["tech/go/goroutines.md"],"explanation":""}`,
@@ -486,9 +486,9 @@ func TestSynthesis_RawMode_StopsAfterPick(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/content?"+url.Values{"query": {"goroutines"}, "mode": {"raw"}}.Encode(), nil)
+		"/search?"+url.Values{"query": {"goroutines"}, "mode": {"raw"}}.Encode(), nil)
 	rec := httptest.NewRecorder()
-	h.GetContent(rec, req)
+	h.Search(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())

@@ -199,29 +199,10 @@ Flags:`)
 		os.Exit(1)
 	}
 
-	params := url.Values{}
-	if *path != "" {
-		params.Set("path", *path)
-	}
-	if *query != "" {
-		params.Set("query", *query)
-	}
-	if *tag != "" {
-		params.Set("tag", *tag)
-	}
-	if *tags != "" {
-		params.Set("tags", *tags)
-	}
-	if *match != "" {
-		params.Set("match", *match)
-	}
-	if *mode != "" {
-		params.Set("mode", *mode)
-	}
-
-	rawBody, err := getRequest(server + "/content?" + params.Encode())
+	endpoint, params := buildGetRequest(*path, *query, *tag, *tags, *match, *mode)
+	rawBody, err := getRequest(server + endpoint + "?" + params.Encode())
 	if err != nil {
-		fatal(logger, "GET /content", err)
+		fatal(logger, "GET "+endpoint, err)
 	}
 
 	if asJSON {
@@ -237,6 +218,43 @@ Flags:`)
 		printTaggedDocs(rawBody, logger)
 	default:
 		printSynthesis(rawBody, logger)
+	}
+}
+
+// buildGetRequest picks the right server endpoint for the flag combo and
+// returns the endpoint path plus its query parameters.
+//
+//	--path                 → /content?path=
+//	--query (default)      → /answer?query=
+//	--query --mode raw     → /search?query=&mode=raw
+//	--tag / --tags         → /search?tag(s)=&match=&mode=
+func buildGetRequest(path, query, tag, tags, match, mode string) (string, url.Values) {
+	params := url.Values{}
+	switch {
+	case path != "":
+		params.Set("path", path)
+		return "/content", params
+	case tag != "" || tags != "":
+		if tag != "" {
+			params.Set("tag", tag)
+		}
+		if tags != "" {
+			params.Set("tags", tags)
+		}
+		if match != "" {
+			params.Set("match", match)
+		}
+		if mode != "" {
+			params.Set("mode", mode)
+		}
+		return "/search", params
+	case query != "" && mode == "raw":
+		params.Set("query", query)
+		params.Set("mode", "raw")
+		return "/search", params
+	default:
+		params.Set("query", query)
+		return "/answer", params
 	}
 }
 

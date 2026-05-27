@@ -324,14 +324,13 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── GET /content ─────────────────────────────────────────────────────────────
+// ── GET /content, /search, /answer ───────────────────────────────────────────
 //
-// Query parameters:
-//   path=<repo-relative path>  → return raw file content
-//   query=<text>               → synthesize (default) or raw document list
-//   tag=<tag> / tags=<a,b>     → return document metadata, or raw with mode=raw
-//   match=any|all              → tag match mode; default any
-//   mode=raw|synthesize        → explicit mode override (only meaningful with query=)
+// /content?path=<repo-relative path>  → raw file content
+// /search?query=<text>                → LLM-ranked raw documents
+// /search?tag=<t>&match=any|all       → tag-filtered document metadata
+// /search?tag=<t>&mode=raw            → tag-filtered raw documents
+// /answer?query=<text>                → LLM-synthesized answer with sources
 
 type rawDocResponse struct {
 	Path    string `json:"path"`
@@ -344,34 +343,49 @@ type synthesisResponse struct {
 	Answer  string   `json:"answer"`
 }
 
-// GetContent serves content either as raw files or as an LLM-synthesized answer.
+// GetContent serves a single file by repo-relative path.
 func (h *Handler) GetContent(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
+	if path == "" {
+		h.writeError(w, http.StatusBadRequest, "path query parameter is required")
+		return
+	}
+	h.getRawFile(w, path)
+}
+
+// Search retrieves matching documents — either by tag filter or by LLM-ranked
+// relevance to a natural-language query. Always returns an array.
+func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("query")
 	tags := tagParams(r)
 	match := strings.ToLower(r.URL.Query().Get("match"))
 	mode := strings.ToLower(r.URL.Query().Get("mode"))
 
 	switch {
-	case path != "":
-		h.getRawFile(w, path)
-
 	case len(tags) > 0 && mode == "raw":
 		h.getRawDocsByTags(w, tags, match)
 
 	case len(tags) > 0:
 		h.getDocsByTags(w, tags, match)
 
-	case query != "" && mode == "raw":
-		h.getRawDocs(w, r.Context(), query)
-
 	case query != "":
-		h.getSynthesis(w, r.Context(), query)
+		h.getRawDocs(w, r.Context(), query)
 
 	default:
 		h.writeError(w, http.StatusBadRequest,
-			"provide either path=<file> or query=<text> (optional mode=raw|synthesize)")
+			"provide either query=<text> or tag=<t> / tags=<a,b>")
 	}
+}
+
+// Answer returns an LLM-synthesized answer to a natural-language query, drawn
+// from the most relevant documents in the knowledge base.
+func (h *Handler) Answer(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+	if query == "" {
+		h.writeError(w, http.StatusBadRequest, "query query parameter is required")
+		return
+	}
+	h.getSynthesis(w, r.Context(), query)
 }
 
 func tagParams(r *http.Request) []string {

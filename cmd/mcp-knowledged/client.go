@@ -132,7 +132,7 @@ func (c *Client) GetRawDocs(query string) ([]rawDocResponse, error) {
 	params.Set("query", query)
 	params.Set("mode", "raw")
 	var resp []rawDocResponse
-	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
+	if err := c.getJSON("/search?"+params.Encode(), &resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -146,7 +146,7 @@ func (c *Client) GetTaggedDocs(tags, match string) ([]taggedDocResponse, error) 
 		params.Set("match", match)
 	}
 	var resp []taggedDocResponse
-	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
+	if err := c.getJSON("/search?"+params.Encode(), &resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -161,7 +161,7 @@ func (c *Client) GetRawDocsByTags(tags, match string) ([]rawDocResponse, error) 
 	}
 	params.Set("mode", "raw")
 	var resp []rawDocResponse
-	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
+	if err := c.getJSON("/search?"+params.Encode(), &resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -172,7 +172,7 @@ func (c *Client) GetSynthesis(query string) (*synthesisResponse, error) {
 	params := url.Values{}
 	params.Set("query", query)
 	var resp synthesisResponse
-	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
+	if err := c.getJSON("/answer?"+params.Encode(), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

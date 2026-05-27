@@ -3,10 +3,11 @@
 ## System overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      HTTP Server                         │
-│   POST /content   GET /content   GET /jobs/{id}          │
-└────────┬──────────────┬──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                         HTTP Server                              │
+│   POST /content   GET /content   GET /search   GET /answer       │
+│   GET /tags       GET /jobs/{id}                                 │
+└────────┬─────────────────┬───────────────────────────────────────┘
          │              │
     write to         read-only
     .knowledged/     (concurrent ok)
@@ -92,20 +93,24 @@ Worker goroutine (wakes on signal)
 
 ---
 
-## Read path — `GET /content`
+## Read paths — `GET /content`, `GET /search`, `GET /answer`
 
-Three modes, selected by query parameters:
+Three endpoints, each with one response shape and one cost profile:
 
 ```
-?path=<rel-path>
+GET /content?path=<rel-path>
   └─ Store.ReadFile(path) → { path, content }
 
-?query=<text>&mode=raw
+GET /search?query=<text>           (LLM-ranked retrieval, raw docs)
   ├─ LLM: given INDEX.md + query, which paths are relevant?  (≤5)
   ├─ filter out paths that don't exist on disk
   └─ read each file → [{ path, content }, ...]
 
-?query=<text>  (default mode: synthesize)
+GET /search?tag=<t>&match=any|all  (tag-index lookup, no LLM)
+  ├─ default → [{ path, title, description, tags, modified }, ...]  (metadata)
+  └─ &mode=raw → [{ path, content }, ...]                            (bodies)
+
+GET /answer?query=<text>           (LLM-ranked + synthesis)
   ├─ LLM: which paths are relevant?
   ├─ read each file, concatenate as context
   └─ LLM: answer query using those documents → { query, sources, answer }

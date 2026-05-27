@@ -18,9 +18,10 @@ POST /content ──► .knowledged/queue.json (durable) ──► worker
 
 startup / timer ──► .knowledged/origin-push.json ──► push origin/<current-branch> when due
 
-GET /content ──► LLM: which docs match?
-                 read files
-                 LLM: synthesize answer  (or return raw)
+GET /content?path=…  ──► raw file
+GET /search?query=…  ──► LLM: which docs match? → raw docs
+GET /search?tag=…    ──► tag index → metadata (or raw with mode=raw)
+GET /answer?query=…  ──► LLM: which docs match? → synthesize answer
 ```
 
 Every write is a real Git commit. Crash recovery works by scanning the commit log — if a job's ID appears in a commit message, it was already completed.
@@ -319,14 +320,32 @@ git commit is atomic and the `INDEX.md` entry is dropped in the same commit.
 
 ### `GET /content`
 
+Fetch a single document by repo-relative path.
+
 | Query params | Returns |
 |---|---|
 | `path=tech/go/file.md` | `{ "path": "...", "content": "..." }` |
-| `query=<text>` | `{ "query": "...", "sources": [...], "answer": "..." }` |
-| `query=<text>&mode=raw` | `[{ "path": "...", "content": "..." }, ...]` |
+
+### `GET /search`
+
+Retrieve documents either by LLM-ranked query or by tag filter. Always
+returns an array.
+
+| Query params | Returns |
+|---|---|
+| `query=<text>` | `[{ "path": "...", "content": "..." }, ...]` (LLM picks relevant docs) |
 | `tag=golang` | `[{ "path": "...", "title": "...", "description": "...", "tags": [...], "modified": "..." }, ...]` |
 | `tags=golang,concurrency&match=all` | Documents matching every supplied tag |
 | `tag=golang&mode=raw` | `[{ "path": "...", "content": "..." }, ...]` |
+
+### `GET /answer`
+
+Synthesize an answer to a natural-language query from the most relevant
+documents in the knowledge base.
+
+| Query params | Returns |
+|---|---|
+| `query=<text>` | `{ "query": "...", "sources": [...], "answer": "..." }` |
 
 ### `GET /posts/recents`
 

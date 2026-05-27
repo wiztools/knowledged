@@ -159,6 +159,8 @@ func main() {
 	mux.HandleFunc("PUT /content", h.PutContent)
 	mux.HandleFunc("DELETE /content", h.DeleteContent)
 	mux.HandleFunc("GET /content", h.GetContent)
+	mux.HandleFunc("GET /search", h.Search)
+	mux.HandleFunc("GET /answer", h.Answer)
 	mux.HandleFunc("POST /ask", h.PostAsk)
 	mux.HandleFunc("GET /jobs/{id}", h.GetJob)
 	mux.HandleFunc("GET /posts/recents", h.GetRecentPosts)
