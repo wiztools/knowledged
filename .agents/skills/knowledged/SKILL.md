@@ -34,6 +34,7 @@ All commands accept `--server` before the subcommand name to target a non-defaul
 - `kc get --query` calls the LLM on the server side; it may take several seconds.
 - `kc get --mode raw` is faster and returns verbatim document content — prefer it when you only need to retrieve, not synthesize.
 - Content can be piped via stdin: `echo "..." | kc post`.
+- When posting or editing Markdown, do not include a top-level `# Title` line if it duplicates the document title. Start the body with the first paragraph or with `##` section headings. knowledged stores the title separately in YAML frontmatter.
 - `sources:` lines from `kc get --query` are printed to stderr; only the synthesized answer goes to stdout — safe to capture with `$()` or redirect.
 
 ## Commands
@@ -83,6 +84,9 @@ kc post [--content TEXT] [--file PATH] [--hint TEXT] [--tags tag1,tag2] [--wait]
 
 Content source priority: `--content` > `--file` > stdin.
 
+Do not include a top-level `# Title` line if it duplicates the document title.
+Start the Markdown body with the first paragraph or with `##` section headings.
+
 Prints the **job ID** to stdout on success (or the final result table when `--wait`).
 
 ```sh
@@ -116,6 +120,9 @@ kc edit --path <repo-relative-path> [--content TEXT] [--file PATH] [--title TEXT
 | `--timeout` | Seconds to wait when `--wait` is set (default: 120) |
 
 Content source priority: `--content` > `--file` > stdin.
+
+Do not include a top-level `# Title` line if it duplicates the document title.
+Start the Markdown body with the first paragraph or with `##` section headings.
 
 ```sh
 # Replace content and wait for the commit

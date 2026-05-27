@@ -130,6 +130,10 @@ kc [--server URL] <command> [flags]
 ### `kc post` — store content
 
 Content is read from `--content`, `--file`, or stdin (in that priority order).
+When posting Markdown, do not include a top-level `# Title` line if it
+duplicates the document title. knowledged stores the title separately in YAML
+frontmatter; start the body with the first paragraph or with `##` section
+headings.
 
 ```sh
 # Inline, fire-and-forget — prints job ID
@@ -185,6 +189,8 @@ Synthesis: the answer goes to stdout; source file paths go to stderr — safe to
 Content is read from `--content`, `--file`, or stdin (in that priority order).
 The edit is asynchronous and committed through the same queue as posts and
 deletes.
+When replacing Markdown content, avoid a top-level `# Title` line that
+duplicates the frontmatter title.
 
 ```sh
 # Replace a document from a file and wait for the commit
@@ -229,6 +235,8 @@ Sends a single-turn question to the configured LLM. The Markdown answer
 is printed to stdout and the suggested tags to stderr — safe to pipe
 into `kc post` without contaminating the content. Nothing is stored
 until you do that.
+Drafted answers omit a top-level H1 because stored notes keep the title in
+frontmatter; section headings, when useful, start at `##`.
 
 ```sh
 kc ask --question "what are goroutines?"

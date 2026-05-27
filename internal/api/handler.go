@@ -108,7 +108,7 @@ The user is asking because they want to understand and learn the concept themsel
 
 For the user's question, produce two outputs:
 
-1. ` + "`answer`" + ` — a clear, well-structured Markdown explanation suitable for later reference. Aim for the level of a senior engineer briefing a teammate who is new to the topic: accurate, concrete, with small examples where they help. The first non-blank line should be a Markdown heading naming the concept. No preamble, no meta-commentary, no "Here is an explanation of…".
+1. ` + "`answer`" + ` — a clear, well-structured Markdown explanation suitable for later reference. Aim for the level of a senior engineer briefing a teammate who is new to the topic: accurate, concrete, with small examples where they help. Do not include a top-level Markdown H1 title; the saved document title is stored separately in frontmatter. Start with the explanatory body directly, using ## or lower headings for sections only when useful. No preamble, no meta-commentary, no "Here is an explanation of…".
 
 2. ` + "`tags`" + ` — 1 to 5 short lowercase tags suitable for cataloging this knowledge in a tag-indexed knowledge base. Prefer common, reusable tags (e.g. "golang", "concurrency", "kubernetes") over hyper-specific ones. Use single words or hyphenated multi-words; no spaces.
 
@@ -124,7 +124,7 @@ var askSchema = llm.Schema{
 		"properties": map[string]any{
 			"answer": map[string]any{
 				"type":        "string",
-				"description": "Markdown explanation. First non-blank line is a Markdown heading naming the concept.",
+				"description": "Markdown explanation body. Do not start with a top-level H1 title; saved documents store the title separately in frontmatter.",
 			},
 			"tags": map[string]any{
 				"type":        "array",
