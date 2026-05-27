@@ -78,10 +78,16 @@ type Queue struct {
 	store           *store.Store
 	organizer       *organizer.Organizer
 	recentLog       *recentlog.RecentLog
+	tagIndex        tagCache
 	logger          *slog.Logger
 	pushOriginEvery time.Duration
 	pushStatePath   string
 	newTimer        func(time.Duration) queueTicker
+}
+
+type tagCache interface {
+	UpsertDocument(path string) error
+	RemoveDocument(path string) error
 }
 
 type queueTicker interface {
@@ -101,7 +107,7 @@ type originPushState struct {
 }
 
 // New creates a Queue, runs startup reconciliation, and returns.
-func New(st *store.Store, org *organizer.Organizer, rl *recentlog.RecentLog, logger *slog.Logger, pushOriginEvery time.Duration) (*Queue, error) {
+func New(st *store.Store, org *organizer.Organizer, rl *recentlog.RecentLog, tags tagCache, logger *slog.Logger, pushOriginEvery time.Duration) (*Queue, error) {
 	q := &Queue{
 		path:            st.StatePath("queue.json"),
 		signal:          make(chan struct{}, 256),
@@ -109,6 +115,7 @@ func New(st *store.Store, org *organizer.Organizer, rl *recentlog.RecentLog, log
 		store:           st,
 		organizer:       org,
 		recentLog:       rl,
+		tagIndex:        tags,
 		logger:          logger,
 		pushOriginEvery: pushOriginEvery,
 		pushStatePath:   st.StatePath(originPushStateFile),
@@ -507,6 +514,7 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 
 	q.logger.Info("job completed successfully", "job_id", job.ID, "path", decision.TargetPath)
 	q.finalize(job, decision.TargetPath, nil)
+	q.updateTagIndex(decision.TargetPath)
 
 	if q.recentLog != nil {
 		e := recentlog.Entry{
@@ -550,6 +558,7 @@ func (q *Queue) executeDelete(ctx context.Context, job *Job) {
 
 	q.logger.Info("delete job completed", "job_id", job.ID, "path", job.Path)
 	q.finalize(job, job.Path, nil)
+	q.removeFromTagIndex(job.Path)
 }
 
 // executeEdit overwrites a file and optionally updates its INDEX.md entry as a
@@ -598,6 +607,25 @@ func (q *Queue) executeEdit(ctx context.Context, job *Job) {
 
 	q.logger.Info("edit job completed", "job_id", job.ID, "path", job.Path)
 	q.finalize(job, job.Path, nil)
+	q.updateTagIndex(job.Path)
+}
+
+func (q *Queue) updateTagIndex(path string) {
+	if q.tagIndex == nil {
+		return
+	}
+	if err := q.tagIndex.UpsertDocument(path); err != nil {
+		q.logger.Warn("tag index update failed; cache will rebuild on demand", "path", path, "error", err)
+	}
+}
+
+func (q *Queue) removeFromTagIndex(path string) {
+	if q.tagIndex == nil {
+		return
+	}
+	if err := q.tagIndex.RemoveDocument(path); err != nil {
+		q.logger.Warn("tag index removal failed; cache will rebuild on demand", "path", path, "error", err)
+	}
 }
 
 func (q *Queue) renderEditedContent(job *Job) (string, error) {

@@ -12,6 +12,7 @@ import (
 	"github.com/wiztools/knowledged/internal/queue"
 	"github.com/wiztools/knowledged/internal/recentlog"
 	"github.com/wiztools/knowledged/internal/store"
+	"github.com/wiztools/knowledged/internal/tagindex"
 )
 
 // Handler holds the dependencies shared across HTTP endpoints.
@@ -20,6 +21,7 @@ type Handler struct {
 	store     *store.Store
 	llm       llm.Provider
 	recentLog *recentlog.RecentLog
+	tagIndex  *tagindex.TagIndex
 	logger    *slog.Logger
 	// askReasoningBudget controls extended-thinking budget for /ask. 0 disables.
 	askReasoningBudget int
@@ -28,12 +30,13 @@ type Handler struct {
 // NewHandler creates a Handler. askReasoningBudget is forwarded as
 // llm.WithReasoningBudget on /ask calls; pass 0 to leave reasoning off
 // (useful for backends that don't support it or when latency matters).
-func NewHandler(q *queue.Queue, st *store.Store, provider llm.Provider, rl *recentlog.RecentLog, logger *slog.Logger, askReasoningBudget int) *Handler {
+func NewHandler(q *queue.Queue, st *store.Store, provider llm.Provider, rl *recentlog.RecentLog, tags *tagindex.TagIndex, logger *slog.Logger, askReasoningBudget int) *Handler {
 	return &Handler{
 		queue:              q,
 		store:              st,
 		llm:                provider,
 		recentLog:          rl,
+		tagIndex:           tags,
 		logger:             logger,
 		askReasoningBudget: askReasoningBudget,
 	}
@@ -326,6 +329,8 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 // Query parameters:
 //   path=<repo-relative path>  → return raw file content
 //   query=<text>               → synthesize (default) or raw document list
+//   tag=<tag> / tags=<a,b>     → return document metadata, or raw with mode=raw
+//   match=any|all              → tag match mode; default any
 //   mode=raw|synthesize        → explicit mode override (only meaningful with query=)
 
 type rawDocResponse struct {
@@ -343,11 +348,19 @@ type synthesisResponse struct {
 func (h *Handler) GetContent(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	query := r.URL.Query().Get("query")
+	tags := tagParams(r)
+	match := strings.ToLower(r.URL.Query().Get("match"))
 	mode := strings.ToLower(r.URL.Query().Get("mode"))
 
 	switch {
 	case path != "":
 		h.getRawFile(w, path)
+
+	case len(tags) > 0 && mode == "raw":
+		h.getRawDocsByTags(w, tags, match)
+
+	case len(tags) > 0:
+		h.getDocsByTags(w, tags, match)
 
 	case query != "" && mode == "raw":
 		h.getRawDocs(w, r.Context(), query)
@@ -359,6 +372,17 @@ func (h *Handler) GetContent(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest,
 			"provide either path=<file> or query=<text> (optional mode=raw|synthesize)")
 	}
+}
+
+func tagParams(r *http.Request) []string {
+	var tags []string
+	for _, tag := range r.URL.Query()["tag"] {
+		tags = append(tags, tag)
+	}
+	for _, raw := range r.URL.Query()["tags"] {
+		tags = append(tags, strings.Split(raw, ",")...)
+	}
+	return tags
 }
 
 // getRawFile returns the content of a single file.
@@ -373,6 +397,47 @@ func (h *Handler) getRawFile(w http.ResponseWriter, relPath string) {
 	}
 
 	h.writeJSON(w, http.StatusOK, rawDocResponse{Path: relPath, Content: content})
+}
+
+// getDocsByTags returns cached metadata for documents matching tag filters.
+func (h *Handler) getDocsByTags(w http.ResponseWriter, tags []string, match string) {
+	if h.tagIndex == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "tag index is not configured")
+		return
+	}
+	h.logger.Info("GET /content tag browse", "tags", tags, "match", match)
+
+	docs, err := h.tagIndex.DocumentsForTags(tags, tagindex.MatchMode(match))
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, docs)
+}
+
+// getRawDocsByTags returns full documents matching tag filters.
+func (h *Handler) getRawDocsByTags(w http.ResponseWriter, tags []string, match string) {
+	if h.tagIndex == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "tag index is not configured")
+		return
+	}
+	h.logger.Info("GET /content raw tag browse", "tags", tags, "match", match)
+
+	docs, err := h.tagIndex.DocumentsForTags(tags, tagindex.MatchMode(match))
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rawDocs := make([]rawDocResponse, 0, len(docs))
+	for _, doc := range docs {
+		content, err := h.store.ReadFile(doc.Path)
+		if err != nil {
+			h.logger.Warn("could not read tagged file", "path", doc.Path, "error", err)
+			continue
+		}
+		rawDocs = append(rawDocs, rawDocResponse{Path: doc.Path, Content: content})
+	}
+	h.writeJSON(w, http.StatusOK, rawDocs)
 }
 
 // getRawDocs uses the LLM to find relevant documents and returns them verbatim.
@@ -620,6 +685,29 @@ func (h *Handler) GetRecentPosts(w http.ResponseWriter, r *http.Request) {
 		entries[i].Tags = fm.Tags
 	}
 	h.writeJSON(w, http.StatusOK, recentPostsResponse{Posts: entries})
+}
+
+// ── GET /tags ────────────────────────────────────────────────────────────────
+
+type tagsResponse struct {
+	Tags []tagindex.TagSummary `json:"tags"`
+}
+
+// GetTags returns all tags known to the derived tag index.
+func (h *Handler) GetTags(w http.ResponseWriter, r *http.Request) {
+	if h.tagIndex == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "tag index is not configured")
+		return
+	}
+	h.logger.Info("GET /tags")
+
+	tags, err := h.tagIndex.ListTags()
+	if err != nil {
+		h.logger.Error("tag index read failed", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "failed to read tag index: "+err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, tagsResponse{Tags: tags})
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

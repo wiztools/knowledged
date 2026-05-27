@@ -230,6 +230,16 @@ func (s *Store) ensureBootstrapped() error {
 // RepoPath returns the absolute root path of the repository.
 func (s *Store) RepoPath() string { return s.repoPath }
 
+// HeadHash returns the current HEAD commit hash. It lets derived caches detect
+// when committed repository content has changed behind them.
+func (s *Store) HeadHash() (string, error) {
+	head, err := s.repo.Head()
+	if err != nil {
+		return "", fmt.Errorf("resolving HEAD: %w", err)
+	}
+	return head.Hash().String(), nil
+}
+
 // StatePath returns the absolute path for an operational state file stored
 // under the repo-local hidden state directory.
 func (s *Store) StatePath(name string) string {
@@ -269,6 +279,48 @@ func (s *Store) ReadFile(relPath string) (string, error) {
 		return "", fmt.Errorf("reading %s: %w", cleanPath, err)
 	}
 	return string(data), nil
+}
+
+// ListMarkdownNotes walks the repository and returns frontmatter metadata for
+// committed knowledge notes. Operational files and INDEX.md are excluded.
+func (s *Store) ListMarkdownNotes() ([]NoteWithFrontmatter, error) {
+	var notes []NoteWithFrontmatter
+	err := filepath.WalkDir(s.repoPath, func(absPath string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			switch name {
+			case ".git", stateDirName:
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		if name == indexFile || !strings.HasSuffix(strings.ToLower(name), ".md") {
+			return nil
+		}
+		rel, err := filepath.Rel(s.repoPath, absPath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		content, err := s.ReadFile(rel)
+		if err != nil {
+			return err
+		}
+		fm, _, err := ParseFrontmatter(content)
+		if err != nil {
+			return fmt.Errorf("parsing frontmatter for %s: %w", rel, err)
+		}
+		notes = append(notes, NoteWithFrontmatter{Path: rel, Frontmatter: fm})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking markdown notes: %w", err)
+	}
+	return notes, nil
 }
 
 // FileExists reports whether a file exists at the given repo-relative path.

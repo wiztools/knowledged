@@ -17,6 +17,7 @@ import (
 	"github.com/wiztools/knowledged/internal/llm"
 	"github.com/wiztools/knowledged/internal/queue"
 	"github.com/wiztools/knowledged/internal/store"
+	"github.com/wiztools/knowledged/internal/tagindex"
 )
 
 // fakeLLM returns canned replies in order. Tests can inspect what each
@@ -76,14 +77,14 @@ func newTestHandlerWithLLM(t *testing.T, llm *fakeLLM) (*Handler, *store.Store) 
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	q, err := queue.New(st, nil, nil, logger, 0)
+	q, err := queue.New(st, nil, nil, nil, logger, 0)
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
 	if llm == nil {
-		return NewHandler(q, st, nil, nil, logger, 0), st
+		return NewHandler(q, st, nil, nil, nil, logger, 0), st
 	}
-	return NewHandler(q, st, llm, nil, logger, 0), st
+	return NewHandler(q, st, llm, nil, nil, logger, 0), st
 }
 
 // newTestHandlerWithBudget is like newTestHandlerWithLLM but lets the test
@@ -96,11 +97,27 @@ func newTestHandlerWithBudget(t *testing.T, fl *fakeLLM, budget int) (*Handler, 
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	q, err := queue.New(st, nil, nil, logger, 0)
+	q, err := queue.New(st, nil, nil, nil, logger, 0)
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
-	return NewHandler(q, st, fl, nil, logger, budget), st
+	return NewHandler(q, st, fl, nil, nil, logger, budget), st
+}
+
+func newTestHandlerWithTags(t *testing.T) (*Handler, *store.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st, err := store.New(dir, logger)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ti := tagindex.New(st)
+	q, err := queue.New(st, nil, nil, ti, logger, 0)
+	if err != nil {
+		t.Fatalf("queue.New: %v", err)
+	}
+	return NewHandler(q, st, nil, nil, ti, logger, 0), st
 }
 
 func TestDeleteContent_Returns202(t *testing.T) {
@@ -245,6 +262,79 @@ func seedIndex(t *testing.T, st *store.Store) {
 	t.Helper()
 	if err := st.WriteIndex(testIndex); err != nil {
 		t.Fatalf("WriteIndex: %v", err)
+	}
+}
+
+func seedTaggedNote(t *testing.T, st *store.Store, path, title string, tags []string, modified time.Time) {
+	t.Helper()
+	content := store.RenderFrontmatter(store.Frontmatter{
+		Title:       title,
+		Description: title + " description",
+		Tags:        tags,
+		Created:     modified.Add(-time.Hour),
+		Modified:    modified,
+	}, "body")
+	seedFile(t, st, path, content)
+}
+
+func TestGetTags_RebuildsAndReturnsCounts(t *testing.T) {
+	h, st := newTestHandlerWithTags(t)
+	seedTaggedNote(t, st, "go/a.md", "A", []string{"go", "api"}, time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC))
+	seedTaggedNote(t, st, "go/b.md", "B", []string{"go"}, time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC))
+
+	req := httptest.NewRequest(http.MethodGet, "/tags", nil)
+	rec := httptest.NewRecorder()
+	h.GetTags(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	var resp tagsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Tags) != 2 {
+		t.Fatalf("expected 2 tags, got %+v", resp.Tags)
+	}
+	if resp.Tags[1].Tag != "go" || resp.Tags[1].Count != 2 {
+		t.Fatalf("expected go count 2, got %+v", resp.Tags)
+	}
+}
+
+func TestGetContent_ByTagReturnsMetadataOrRawDocs(t *testing.T) {
+	h, st := newTestHandlerWithTags(t)
+	seedTaggedNote(t, st, "go/a.md", "A", []string{"go", "api"}, time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC))
+	seedTaggedNote(t, st, "go/b.md", "B", []string{"go"}, time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC))
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/content?"+url.Values{"tags": {"go,api"}, "match": {"all"}}.Encode(), nil)
+	rec := httptest.NewRecorder()
+	h.GetContent(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	var docs []tagindex.Document
+	if err := json.NewDecoder(rec.Body).Decode(&docs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(docs) != 1 || docs[0].Path != "go/a.md" || docs[0].Title != "A" {
+		t.Fatalf("unexpected tagged metadata: %+v", docs)
+	}
+
+	rawReq := httptest.NewRequest(http.MethodGet,
+		"/content?"+url.Values{"tag": {"api"}, "mode": {"raw"}}.Encode(), nil)
+	rawRec := httptest.NewRecorder()
+	h.GetContent(rawRec, rawReq)
+	if rawRec.Code != http.StatusOK {
+		t.Fatalf("expected raw 200, got %d — body: %s", rawRec.Code, rawRec.Body.String())
+	}
+	var rawDocs []rawDocResponse
+	if err := json.NewDecoder(rawRec.Body).Decode(&rawDocs); err != nil {
+		t.Fatalf("raw decode: %v", err)
+	}
+	if len(rawDocs) != 1 || rawDocs[0].Path != "go/a.md" || !strings.Contains(rawDocs[0].Content, "tags:") {
+		t.Fatalf("unexpected raw docs: %+v", rawDocs)
 	}
 }
 

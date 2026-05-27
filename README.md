@@ -162,12 +162,20 @@ kc get --query "how does Rust handle memory safety?"
 
 # Raw matching documents, no synthesis
 kc get --query "docker setup" --mode raw
+
+# Browse by tag
+kc tags
+kc get --tag golang
+kc get --tags "golang,concurrency" --match all
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--path` | | Repo-relative file path (always raw) |
 | `--query` | | Natural-language query |
+| `--tag` | | Single tag to browse |
+| `--tags` | | Comma-separated tags to browse |
+| `--match` | `any` | Tag matching mode: `any` or `all` |
 | `--mode` | `synthesize` | `raw` or `synthesize` (with `--query`) |
 
 Synthesis: the answer goes to stdout; source file paths go to stderr — safe to capture with `$()`.
@@ -289,6 +297,19 @@ kc --json recent | jq '.posts[].path'
 | `path=tech/go/file.md` | `{ "path": "...", "content": "..." }` |
 | `query=<text>` | `{ "query": "...", "sources": [...], "answer": "..." }` |
 | `query=<text>&mode=raw` | `[{ "path": "...", "content": "..." }, ...]` |
+| `tag=golang` | `[{ "path": "...", "title": "...", "description": "...", "tags": [...], "modified": "..." }, ...]` |
+| `tags=golang,concurrency&match=all` | Documents matching every supplied tag |
+| `tag=golang&mode=raw` | `[{ "path": "...", "content": "..." }, ...]` |
+
+### `GET /tags`
+
+Returns tags from the derived cache at `.knowledged/tag-index.json`. The cache
+is rebuilt from note frontmatter when missing, malformed, version-mismatched, or
+stale against the repository HEAD.
+
+```json
+{ "tags": [{ "tag": "golang", "count": 12 }] }
+```
 
 ### `POST /ask`
 

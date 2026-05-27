@@ -11,6 +11,7 @@
 //	edit    Edit an existing document in the knowledge base
 //	delete  Delete a file from the knowledge base
 //	job     Check the status of a store job
+//	tags    List tags in the knowledge base
 //	recent  List the 20 most recently stored documents
 //	ask     Draft a Markdown answer from the configured LLM
 package main
@@ -63,6 +64,8 @@ func main() {
 		runJob(server, args, logger, asJSON)
 	case "delete":
 		runDelete(server, args, logger, asJSON)
+	case "tags":
+		runTags(server, logger, asJSON)
 	case "recent":
 		runRecent(server, logger, asJSON)
 	case "ask":
@@ -175,6 +178,7 @@ Retrieve content from the knowledge base.
 
   --path   returns the raw file content.
   --query  returns a synthesized answer (default) or matching raw docs (--mode raw).
+  --tag    browses documents by tag.
 
 Flags:`)
 		fs.PrintDefaults()
@@ -182,12 +186,15 @@ Flags:`)
 
 	path := fs.String("path", "", "repo-relative file path (e.g. tech/go/basics.md)")
 	query := fs.String("query", "", "natural-language query")
+	tag := fs.String("tag", "", "single tag to browse")
+	tags := fs.String("tags", "", "comma-separated tags to browse")
+	match := fs.String("match", "", "tag match mode: any | all (default any)")
 	mode := fs.String("mode", "", "response mode: raw | synthesize (default synthesize for --query)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
-	if *path == "" && *query == "" {
+	if *path == "" && *query == "" && *tag == "" && *tags == "" {
 		fs.Usage()
 		os.Exit(1)
 	}
@@ -198,6 +205,15 @@ Flags:`)
 	}
 	if *query != "" {
 		params.Set("query", *query)
+	}
+	if *tag != "" {
+		params.Set("tag", *tag)
+	}
+	if *tags != "" {
+		params.Set("tags", *tags)
+	}
+	if *match != "" {
+		params.Set("match", *match)
 	}
 	if *mode != "" {
 		params.Set("mode", *mode)
@@ -215,10 +231,45 @@ Flags:`)
 
 	// Detect which response shape we got and pretty-print accordingly.
 	switch {
-	case *path != "" || (*query != "" && *mode == "raw"):
+	case *path != "" || (*query != "" && *mode == "raw") || ((*tag != "" || *tags != "") && *mode == "raw"):
 		printRaw(rawBody, logger)
+	case *tag != "" || *tags != "":
+		printTaggedDocs(rawBody, logger)
 	default:
 		printSynthesis(rawBody, logger)
+	}
+}
+
+// ── tags ─────────────────────────────────────────────────────────────────────
+
+func runTags(server string, logger *slog.Logger, asJSON bool) {
+	rawBody, err := getRequest(server + "/tags")
+	if err != nil {
+		fatal(logger, "GET /tags", err)
+	}
+	if asJSON {
+		writeJSONOut(rawBody)
+		return
+	}
+
+	var resp struct {
+		Tags []struct {
+			Tag   string `json:"tag"`
+			Count int    `json:"count"`
+		} `json:"tags"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rawBody, &resp); err != nil {
+		logger.Warn("could not parse tags response, printing raw", "error", err)
+		fmt.Println(string(rawBody))
+		return
+	}
+	if resp.Error != "" {
+		fmt.Fprintln(os.Stderr, "error:", resp.Error)
+		os.Exit(1)
+	}
+	for _, tag := range resp.Tags {
+		fmt.Printf("%-24s %d\n", tag.Tag, tag.Count)
 	}
 }
 
@@ -682,6 +733,40 @@ func printRaw(body []byte, logger *slog.Logger) {
 	fmt.Println(string(body))
 }
 
+func printTaggedDocs(body []byte, logger *slog.Logger) {
+	var docs []struct {
+		Path        string   `json:"path"`
+		Title       string   `json:"title"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		Error       string   `json:"error"`
+	}
+	if err := json.Unmarshal(body, &docs); err != nil {
+		var resp struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(body, &resp); err == nil && resp.Error != "" {
+			fmt.Fprintln(os.Stderr, "error:", resp.Error)
+			os.Exit(1)
+		}
+		logger.Warn("unexpected tagged-doc response shape, printing raw JSON", "error", err)
+		fmt.Println(string(body))
+		return
+	}
+	for _, d := range docs {
+		fmt.Printf("%s\n", d.Path)
+		if d.Title != "" {
+			fmt.Printf("  title : %s\n", d.Title)
+		}
+		if d.Description != "" {
+			fmt.Printf("  desc  : %s\n", d.Description)
+		}
+		if len(d.Tags) > 0 {
+			fmt.Printf("  tags  : %s\n", strings.Join(d.Tags, ", "))
+		}
+	}
+}
+
 func printSynthesis(body []byte, logger *slog.Logger) {
 	var resp struct {
 		Query   string   `json:"query"`
@@ -870,6 +955,7 @@ Commands:
   edit     Edit an existing document in the knowledge base
   delete   Delete a file from the knowledge base
   job      Check the status of a job
+  tags     List tags in the knowledge base
   recent   List the 20 most recently stored documents
   ask      Draft a Markdown answer from the LLM (does not store anything)
 
@@ -898,6 +984,11 @@ Examples:
 
   # Find matching docs without synthesis
   kc get --query "docker" --mode raw
+
+  # Browse documents by tag
+  kc tags
+  kc get --tag golang
+  kc get --tags "golang,concurrency" --match all
 
   # Delete a file and wait for confirmation
   kc delete --path tech/go/goroutines.md --wait

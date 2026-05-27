@@ -38,12 +38,19 @@ func registerTools(s *server.MCPServer, c *Client) {
 	// get_content
 	s.AddTool(
 		mcp.NewTool("get_content",
-			mcp.WithDescription("Retrieve content from the knowledged knowledge base. Provide either 'path' (exact file) or 'query' (natural language search). With query, use mode='raw' for matching docs or mode='synthesize' (default) for an LLM answer."),
+			mcp.WithDescription("Retrieve content from the knowledged knowledge base. Provide 'path' (exact file), 'query' (natural language search), or 'tags' (tag browsing). With query or tags, use mode='raw' for matching docs or mode='synthesize' (default) for an LLM answer; tag browsing returns metadata unless mode='raw'."),
 			mcp.WithString("path",
 				mcp.Description("Repo-relative file path to retrieve (e.g. 'tech/go/goroutines.md')"),
 			),
 			mcp.WithString("query",
 				mcp.Description("Natural language query to search the knowledge base"),
+			),
+			mcp.WithString("tags",
+				mcp.Description("Comma-separated tags to browse (e.g. 'go,concurrency')"),
+			),
+			mcp.WithString("match",
+				mcp.Description("Tag match mode: 'any' (default) or 'all'"),
+				mcp.Enum("any", "all"),
 			),
 			mcp.WithString("mode",
 				mcp.Description("Response mode for query: 'synthesize' (LLM answer, default) or 'raw' (return matching documents)"),
@@ -164,10 +171,12 @@ func makeGetContentHandler(c *Client) func(context.Context, mcp.CallToolRequest)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		path := req.GetString("path", "")
 		query := req.GetString("query", "")
+		tags := req.GetString("tags", "")
+		match := req.GetString("match", "any")
 		mode := req.GetString("mode", "synthesize")
 
-		if path == "" && query == "" {
-			return mcp.NewToolResultError("provide either 'path' or 'query'"), nil
+		if path == "" && query == "" && tags == "" {
+			return mcp.NewToolResultError("provide 'path', 'query', or 'tags'"), nil
 		}
 
 		if path != "" {
@@ -176,6 +185,48 @@ func makeGetContentHandler(c *Client) func(context.Context, mcp.CallToolRequest)
 				return mcp.NewToolResultError(fmt.Sprintf("get_content failed: %s", err)), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("=== %s ===\n%s", doc.Path, doc.Content)), nil
+		}
+
+		if tags != "" {
+			if mode == "raw" {
+				docs, err := c.GetRawDocsByTags(tags, match)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("get_content failed: %s", err)), nil
+				}
+				if len(docs) == 0 {
+					return mcp.NewToolResultText("No matching documents found."), nil
+				}
+				var sb strings.Builder
+				for i, d := range docs {
+					if i > 0 {
+						sb.WriteString("\n" + strings.Repeat("─", 60) + "\n")
+					}
+					fmt.Fprintf(&sb, "=== %s ===\n%s", d.Path, d.Content)
+				}
+				return mcp.NewToolResultText(sb.String()), nil
+			}
+
+			docs, err := c.GetTaggedDocs(tags, match)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("get_content failed: %s", err)), nil
+			}
+			if len(docs) == 0 {
+				return mcp.NewToolResultText("No matching documents found."), nil
+			}
+			var sb strings.Builder
+			for _, d := range docs {
+				fmt.Fprintf(&sb, "%s\n", d.Path)
+				if d.Title != "" {
+					fmt.Fprintf(&sb, "  title: %s\n", d.Title)
+				}
+				if d.Description != "" {
+					fmt.Fprintf(&sb, "  description: %s\n", d.Description)
+				}
+				if len(d.Tags) > 0 {
+					fmt.Fprintf(&sb, "  tags: %s\n", strings.Join(d.Tags, ", "))
+				}
+			}
+			return mcp.NewToolResultText(sb.String()), nil
 		}
 
 		// query path

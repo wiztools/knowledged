@@ -18,6 +18,7 @@ import (
 	"github.com/wiztools/knowledged/internal/queue"
 	"github.com/wiztools/knowledged/internal/recentlog"
 	"github.com/wiztools/knowledged/internal/store"
+	"github.com/wiztools/knowledged/internal/tagindex"
 )
 
 func main() {
@@ -132,9 +133,13 @@ func main() {
 	rl := recentlog.New(st.StatePath("recent-posts.jsonl"), logger)
 	logger.Info("recent-posts log initialized", "path", st.StatePath("recent-posts.jsonl"))
 
+	// ── Derived tag index ────────────────────────────────────────────────────
+	ti := tagindex.New(st)
+	logger.Info("tag index initialized", "path", st.StatePath("tag-index.json"))
+
 	// ── Queue ─────────────────────────────────────────────────────────────────
 	logger.Info("initializing job queue")
-	q, err := queue.New(st, org, rl, logger, *pushOriginEvery)
+	q, err := queue.New(st, org, rl, ti, logger, *pushOriginEvery)
 	if err != nil {
 		logger.Error("failed to initialize queue", "error", err)
 		os.Exit(1)
@@ -147,7 +152,7 @@ func main() {
 	go q.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	h := api.NewHandler(q, st, provider, rl, logger, *askReasoningBudget)
+	h := api.NewHandler(q, st, provider, rl, ti, logger, *askReasoningBudget)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /content", h.PostContent)
@@ -157,6 +162,7 @@ func main() {
 	mux.HandleFunc("POST /ask", h.PostAsk)
 	mux.HandleFunc("GET /jobs/{id}", h.GetJob)
 	mux.HandleFunc("GET /posts/recents", h.GetRecentPosts)
+	mux.HandleFunc("GET /tags", h.GetTags)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", *port),

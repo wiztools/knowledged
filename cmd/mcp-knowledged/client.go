@@ -56,6 +56,14 @@ type rawDocResponse struct {
 	Content string `json:"content"`
 }
 
+type taggedDocResponse struct {
+	Path        string   `json:"path"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+	Modified    string   `json:"modified"`
+}
+
 type synthesisResponse struct {
 	Query   string   `json:"query"`
 	Sources []string `json:"sources"`
@@ -122,6 +130,35 @@ func (c *Client) GetRawFile(path string) (*rawDocResponse, error) {
 func (c *Client) GetRawDocs(query string) ([]rawDocResponse, error) {
 	params := url.Values{}
 	params.Set("query", query)
+	params.Set("mode", "raw")
+	var resp []rawDocResponse
+	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// GetTaggedDocs retrieves documents matching tags without LLM synthesis.
+func (c *Client) GetTaggedDocs(tags, match string) ([]taggedDocResponse, error) {
+	params := url.Values{}
+	params.Set("tags", tags)
+	if match != "" {
+		params.Set("match", match)
+	}
+	var resp []taggedDocResponse
+	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// GetRawDocsByTags retrieves full documents matching tags.
+func (c *Client) GetRawDocsByTags(tags, match string) ([]rawDocResponse, error) {
+	params := url.Values{}
+	params.Set("tags", tags)
+	if match != "" {
+		params.Set("match", match)
+	}
 	params.Set("mode", "raw")
 	var resp []rawDocResponse
 	if err := c.getJSON("/content?"+params.Encode(), &resp); err != nil {
