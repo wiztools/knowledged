@@ -114,3 +114,22 @@ func TestRenderFrontmatterRoundTrip(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 }
+
+func TestRenderFrontmatterWritesTimesInUTC(t *testing.T) {
+	ist := time.FixedZone("IST", 5*60*60+30*60)
+	fm := Frontmatter{
+		Title:       "Timezone Note",
+		Description: "Checks persisted timestamp timezone.",
+		Tags:        []string{"time"},
+		Created:     time.Date(2026, 5, 25, 23, 31, 16, 0, ist),
+		Modified:    time.Date(2026, 5, 26, 0, 1, 16, 0, ist),
+	}
+
+	rendered := RenderFrontmatter(fm, "# Timezone Note\n")
+	if !strings.Contains(rendered, "created: 2026-05-25T18:01:16Z\n") {
+		t.Fatalf("created was not rendered in UTC:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "modified: 2026-05-25T18:31:16Z\n") {
+		t.Fatalf("modified was not rendered in UTC:\n%s", rendered)
+	}
+}
