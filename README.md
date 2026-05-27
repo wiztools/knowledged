@@ -284,8 +284,27 @@ kc --json recent | jq '.posts[].path'
   "path": "tech/go/goroutines.md",
   "content": "...replacement Markdown...",
   "title": "optional INDEX title",
-  "description": "optional INDEX description"
+  "description": "optional INDEX description",
+  "tags": ["optional", "replacement", "tags"]
 }
+
+// Response 202
+{ "job_id": "uuid", "status": "queued" }
+```
+
+`content`, `title`, `description`, and `tags` are all optional individually,
+but at least one must be present alongside `path` — a metadata-only edit
+that omits `content` is supported.
+
+### `DELETE /content`
+
+Removes a stored document by repo-relative path. The deletion is enqueued
+through the same single-writer worker as posts and edits, so the resulting
+git commit is atomic and the `INDEX.md` entry is dropped in the same commit.
+
+```json
+// Request
+{ "path": "tech/go/goroutines.md" }
 
 // Response 202
 { "job_id": "uuid", "status": "queued" }
@@ -308,6 +327,26 @@ kc --json recent | jq '.posts[].path'
 | `tag=golang` | `[{ "path": "...", "title": "...", "description": "...", "tags": [...], "modified": "..." }, ...]` |
 | `tags=golang,concurrency&match=all` | Documents matching every supplied tag |
 | `tag=golang&mode=raw` | `[{ "path": "...", "content": "..." }, ...]` |
+
+### `GET /posts/recents`
+
+Returns up to the 20 most recently stored documents, newest first. Tags are
+hydrated from each document's YAML frontmatter; documents that have been
+deleted or whose frontmatter is unparseable are returned without a `tags`
+field rather than failing the whole request.
+
+```json
+{
+  "posts": [
+    {
+      "job_id":     "uuid",
+      "path":       "tech/go/goroutines.md",
+      "tags":       ["golang", "concurrency"],
+      "created_at": "2026-05-27T09:15:42Z"
+    }
+  ]
+}
+```
 
 ### `GET /tags`
 
