@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -82,6 +83,25 @@ func TestWriteFileRejectsTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(st.RepoPath(), "..", "outside.md")); !os.IsNotExist(err) {
 		t.Fatalf("expected outside file not to be created, stat err: %v", err)
+	}
+}
+
+func TestWriteNewFileRejectsExistingFile(t *testing.T) {
+	st := newTestStore(t)
+
+	if err := st.WriteFile("notes/hello.md", "original"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	err := st.WriteNewFile("notes/hello.md", "replacement")
+	if !errors.Is(err, ErrFileExists) {
+		t.Fatalf("expected ErrFileExists, got %v", err)
+	}
+	got, err := st.ReadFile("notes/hello.md")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got != "original" {
+		t.Fatalf("existing file was overwritten: %q", got)
 	}
 }
 

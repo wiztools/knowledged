@@ -198,6 +198,22 @@ func TestDecide_UsesStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestDecideAvoidingWarnsAboutExistingTargetPath(t *testing.T) {
+	routeReply := `{"candidate_sections":["Go"],"proposed_new_section":""}`
+	placeReply := `{"target_path":"tech/go/generics-2.md","title":"x","description":"x","updated_sections":[{"name":"Go","body":"- [x](tech/go/generics-2.md) — y\n"}]}`
+
+	org, llm, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
+	if _, err := org.DecideAvoiding(context.Background(), "x", "", nil, []string{"tech/go/generics.md"}); err != nil {
+		t.Fatalf("DecideAvoiding: %v", err)
+	}
+	if !strings.Contains(llm.calls[0].user, "tech/go/generics.md") {
+		t.Fatalf("route prompt missing conflicting path:\n%s", llm.calls[0].user)
+	}
+	if !strings.Contains(llm.calls[1].user, "MUST NOT be reused or overwritten") {
+		t.Fatalf("placement prompt missing overwrite warning:\n%s", llm.calls[1].user)
+	}
+}
+
 func TestDecide_EmptyIndex(t *testing.T) {
 	routeReply := `{"candidate_sections":[],"proposed_new_section":"Go"}`
 	placeReply := `{"target_path":"tech/go/intro.md","title":"Go Intro","description":"Intro","updated_sections":[{"name":"Go","body":"- [Go Intro](tech/go/intro.md) — intro\n"}]}`
@@ -254,5 +270,39 @@ func TestExecuteWritesFrontmatter(t *testing.T) {
 	}
 	if body != "# Go Generics\n\nBody.\n" {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestExecuteRejectsExistingTargetPath(t *testing.T) {
+	org, _, st := newOrganizerWithIndex(t, seedIndex, nil)
+	existing := store.RenderFrontmatter(store.Frontmatter{
+		Title:       "Go Generics",
+		Description: "Existing note",
+		Created:     time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		Modified:    time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+	}, "original body")
+	if err := st.WriteFile("tech/go/generics.md", existing); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := st.Commit("seed existing note"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	decision := &Decision{
+		TargetPath:   "tech/go/generics.md",
+		Title:        "Replacement",
+		Description:  "Should not overwrite",
+		UpdatedIndex: seedIndex,
+	}
+	err := org.Execute(context.Background(), "job-123", "replacement body", decision)
+	if !errors.Is(err, store.ErrFileExists) {
+		t.Fatalf("expected ErrFileExists, got %v", err)
+	}
+	got, err := st.ReadFile("tech/go/generics.md")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got != existing {
+		t.Fatalf("existing content was overwritten:\n%s", got)
 	}
 }

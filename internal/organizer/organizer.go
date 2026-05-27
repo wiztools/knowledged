@@ -200,6 +200,12 @@ func New(st *store.Store, provider llm.Provider, logger *slog.Logger) *Organizer
 // Decide runs the two-pass placement flow. The LLM never sees the full INDEX
 // at once — pass 1 sees only headings, pass 2 sees only the selected sections.
 func (o *Organizer) Decide(ctx context.Context, content, hint string, tags []string) (*Decision, error) {
+	return o.DecideAvoiding(ctx, content, hint, tags, nil)
+}
+
+// DecideAvoiding runs the placement flow while telling the LLM to avoid target
+// paths that already conflicted during this post.
+func (o *Organizer) DecideAvoiding(ctx context.Context, content, hint string, tags []string, conflictingPaths []string) (*Decision, error) {
 	rawIndex, err := o.store.ReadIndex()
 	if err != nil {
 		return nil, fmt.Errorf("reading index: %w", err)
@@ -207,6 +213,7 @@ func (o *Organizer) Decide(ctx context.Context, content, hint string, tags []str
 	parsed := store.ParseIndex(rawIndex)
 
 	meta := buildMetaBlock(hint, tags)
+	meta += buildConflictBlock(conflictingPaths)
 
 	// ── Pass 1: routing ──────────────────────────────────────────────────
 	headingList := renderHeadingList(parsed)
@@ -285,6 +292,10 @@ func (o *Organizer) Decide(ctx context.Context, content, hint string, tags []str
 // updates INDEX.md, and commits everything in one atomic Git commit.
 // The jobID is embedded in the commit message for crash-recovery purposes.
 func (o *Organizer) Execute(ctx context.Context, jobID, content string, decision *Decision) error {
+	if o.store.FileExists(decision.TargetPath) {
+		return fmt.Errorf("writing content: %w: %s", store.ErrFileExists, decision.TargetPath)
+	}
+
 	for _, ref := range decision.Refactors {
 		if !o.store.FileExists(ref.From) {
 			o.logger.Warn("refactor source does not exist, skipping", "from", ref.From, "to", ref.To)
@@ -316,7 +327,7 @@ func (o *Organizer) Execute(ctx context.Context, jobID, content string, decision
 		Created:     created,
 		Modified:    modified,
 	}, body)
-	if err := o.store.WriteFile(decision.TargetPath, rendered); err != nil {
+	if err := o.store.WriteNewFile(decision.TargetPath, rendered); err != nil {
 		return fmt.Errorf("writing content: %w", err)
 	}
 
@@ -365,6 +376,20 @@ func buildMetaBlock(hint string, tags []string) string {
 	if len(tags) > 0 {
 		fmt.Fprintf(&sb, "Tags: %s\n", strings.Join(tags, ", "))
 	}
+	return sb.String()
+}
+
+func buildConflictBlock(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\nPlacement conflict from previous attempt:\n")
+	sb.WriteString("The following target path already exists and MUST NOT be reused or overwritten:\n")
+	for _, path := range paths {
+		fmt.Fprintf(&sb, "- %s\n", path)
+	}
+	sb.WriteString("Choose a different new target_path and update INDEX.md for that new path.\n")
 	return sb.String()
 }
 

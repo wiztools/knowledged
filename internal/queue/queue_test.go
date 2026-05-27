@@ -3,6 +3,7 @@ package queue
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -11,8 +12,36 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
+	"github.com/wiztools/knowledged/internal/llm"
+	"github.com/wiztools/knowledged/internal/organizer"
 	"github.com/wiztools/knowledged/internal/store"
 )
+
+type fakeLLM struct {
+	replies []string
+	calls   []fakeCall
+}
+
+type fakeCall struct {
+	user string
+}
+
+func (f *fakeLLM) Complete(_ context.Context, _, user string, _ ...llm.CallOption) (string, error) {
+	f.calls = append(f.calls, fakeCall{user: user})
+	return f.next()
+}
+
+func (f *fakeLLM) CompleteStructured(_ context.Context, _, user string, _ llm.Schema, _ ...llm.CallOption) (string, error) {
+	f.calls = append(f.calls, fakeCall{user: user})
+	return f.next()
+}
+
+func (f *fakeLLM) next() (string, error) {
+	if len(f.calls) > len(f.replies) {
+		return "", errors.New("fakeLLM: ran out of canned replies")
+	}
+	return f.replies[len(f.calls)-1], nil
+}
 
 func newTestQueue(t *testing.T) (*Queue, *store.Store) {
 	t.Helper()
@@ -102,6 +131,75 @@ func TestEnqueue_ContentHashSet(t *testing.T) {
 	}
 	if job.ContentHash != contentHash("hello world") {
 		t.Errorf("ContentHash mismatch: got %q", job.ContentHash)
+	}
+}
+
+func TestProcessJobRetriesPlacementOnExistingTargetPath(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st, err := store.New(dir, logger)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	existing := store.RenderFrontmatter(store.Frontmatter{
+		Title:       "Go Goroutines",
+		Description: "concurrency primitives",
+		Created:     time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		Modified:    time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+	}, "original body")
+	if err := st.WriteFile("tech/go/goroutines.md", existing); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	index := `# Index
+
+<!-- Auto-managed by knowledged. Do not edit manually. -->
+
+## Go
+- [Go Goroutines](tech/go/goroutines.md) — concurrency primitives
+`
+	if err := st.WriteIndex(index); err != nil {
+		t.Fatalf("WriteIndex: %v", err)
+	}
+	if err := st.Commit("seed"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	llm := &fakeLLM{replies: []string{
+		`{"candidate_sections":["Go"],"proposed_new_section":""}`,
+		`{"target_path":"tech/go/goroutines.md","title":"Go Generics","description":"Type parameters","refactors":[],"updated_sections":[{"name":"Go","body":"- [Go Goroutines](tech/go/goroutines.md) — concurrency primitives\n- [Go Generics](tech/go/goroutines.md) — type parameters\n"}]}`,
+		`{"candidate_sections":["Go"],"proposed_new_section":""}`,
+		`{"target_path":"tech/go/generics.md","title":"Go Generics","description":"Type parameters","refactors":[],"updated_sections":[{"name":"Go","body":"- [Go Goroutines](tech/go/goroutines.md) — concurrency primitives\n- [Go Generics](tech/go/generics.md) — type parameters\n"}]}`,
+	}}
+	org := organizer.New(st, llm, logger)
+	q, err := New(st, org, nil, nil, logger, 0)
+	if err != nil {
+		t.Fatalf("queue.New: %v", err)
+	}
+	job, err := q.Enqueue("Go supports type parameters.", "go generics", nil)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	q.processJob(context.Background(), job)
+
+	if job.Status != StatusDone {
+		t.Fatalf("expected job done after retry, got %s: %s", job.Status, job.Error)
+	}
+	gotExisting, err := st.ReadFile("tech/go/goroutines.md")
+	if err != nil {
+		t.Fatalf("ReadFile existing: %v", err)
+	}
+	if gotExisting != existing {
+		t.Fatalf("existing content was overwritten:\n%s", gotExisting)
+	}
+	if !st.FileExists("tech/go/generics.md") {
+		t.Fatal("expected retried placement to create tech/go/generics.md")
+	}
+	if len(llm.calls) != 4 {
+		t.Fatalf("expected 4 LLM calls, got %d", len(llm.calls))
+	}
+	if !strings.Contains(llm.calls[2].user, "tech/go/goroutines.md") {
+		t.Fatalf("retry route prompt missing conflicting path:\n%s", llm.calls[2].user)
 	}
 }
 

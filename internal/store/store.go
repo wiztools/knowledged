@@ -27,6 +27,9 @@ type Store struct {
 const stateDirName = ".knowledged"
 const rootedStateDirPattern = "/" + stateDirName + "/"
 
+// ErrFileExists reports an attempted create-only write to an existing path.
+var ErrFileExists = errors.New("file already exists")
+
 // CleanContentPath validates a user-supplied repository-relative Markdown path
 // and returns it in slash-separated form.
 func CleanContentPath(relPath string) (string, error) {
@@ -264,6 +267,38 @@ func (s *Store) WriteFile(relPath, content string) error {
 		return fmt.Errorf("staging %s: %w", cleanPath, err)
 	}
 	s.logger.Debug("wrote and staged file", "path", cleanPath, "bytes", len(content))
+	return nil
+}
+
+// WriteNewFile writes content only when the target path does not already exist.
+// Parent directories are created automatically.
+func (s *Store) WriteNewFile(relPath, content string) error {
+	cleanPath, err := CleanContentPath(relPath)
+	if err != nil {
+		return err
+	}
+	absPath := filepath.Join(s.repoPath, filepath.FromSlash(cleanPath))
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return fmt.Errorf("creating directories for %s: %w", cleanPath, err)
+	}
+	f, err := os.OpenFile(absPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("%w: %s", ErrFileExists, cleanPath)
+	}
+	if err != nil {
+		return fmt.Errorf("creating file %s: %w", cleanPath, err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("writing file %s: %w", cleanPath, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing file %s: %w", cleanPath, err)
+	}
+	if _, err := s.worktree.Add(cleanPath); err != nil {
+		return fmt.Errorf("staging %s: %w", cleanPath, err)
+	}
+	s.logger.Debug("created and staged file", "path", cleanPath, "bytes", len(content))
 	return nil
 }
 

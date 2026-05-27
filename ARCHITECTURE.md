@@ -67,19 +67,25 @@ Worker goroutine (wakes on signal)
   ├─ nextQueued(): read .knowledged/queue.json, find oldest queued job,
   │                mark it status=processing, rewrite file  ← mutex
   │
-  ├─ Organizer.Decide()
+  ├─ Organizer.DecideAvoiding()
   │    ├─ read INDEX.md
   │    ├─ build prompt (index + content + hint + tags)
   │    ├─ LLM.Complete()  →  raw JSON string
   │    └─ parse Decision { target_path, refactors, updated_index }
   │
   ├─ Organizer.Execute()
+  │    ├─ fail fast if target_path already exists
   │    ├─ for each refactor: Store.MoveFile(from, to)
-  │    ├─ Store.WriteFile(target_path, content)
+  │    ├─ Store.WriteNewFile(target_path, content)  ← create-only, never overwrite
   │    ├─ Store.WriteIndex(updated_index)
   │    └─ Store.Commit("store(<jobID>): <target_path>")
   │                         ▲
   │                 job ID embedded — used for crash recovery
+  │
+  ├─ on target_path conflict:
+  │    ├─ retry Organizer.DecideAvoiding() once with the conflicted path listed
+  │    │  as forbidden
+  │    └─ fail the job if the retry also chooses an existing path
   │
   └─ finalize(): mark job done/failed in .knowledged/queue.json, cache in results map
 ```

@@ -32,8 +32,9 @@ const (
 // LLM retry policy: on timeout, wait and retry so a cold Jan model-load doesn't
 // permanently fail the job. Only timeouts are retried; logical errors are not.
 const (
-	maxLLMAttempts = 3
-	llmRetryDelay  = 30 * time.Second
+	maxLLMAttempts       = 3
+	maxPlacementAttempts = 2
+	llmRetryDelay        = 30 * time.Second
 )
 
 // resultsTTL is how long a completed job stays queryable via GET /jobs/{id}.
@@ -477,39 +478,32 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 	}
 
 	// Default: "post" or empty (backward compat with existing queue entries).
-	// Retry on timeout: Jan may need time to load the model into GPU memory on
-	// first use. The HTTP client times out before the load completes, but the
-	// model is warm by the time we retry.
-	var (
-		decision *organizer.Decision
-		err      error
-	)
-	for attempt := 1; ; attempt++ {
-		decision, err = q.organizer.Decide(ctx, job.Content, job.Hint, job.Tags)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, context.DeadlineExceeded) || attempt >= maxLLMAttempts {
-			q.logger.Error("organizer decision failed", "job_id", job.ID, "error", err, "attempt", attempt)
+	// Decision calls still retry on timeout, and placement gets one extra attempt
+	// if the model picks an already-existing target path.
+	var decision *organizer.Decision
+	conflictingPaths := []string{}
+	for placementAttempt := 1; placementAttempt <= maxPlacementAttempts; placementAttempt++ {
+		var err error
+		decision, err = q.decideWithRetry(ctx, job, conflictingPaths)
+		if err != nil {
 			q.finalize(job, "", err)
 			return
 		}
-		q.logger.Warn("LLM timed out — model likely loading, waiting before retry",
-			"job_id", job.ID, "attempt", attempt, "retry_in", llmRetryDelay)
-		select {
-		case <-ctx.Done():
-			q.finalize(job, "", ctx.Err())
-			return
-		case <-time.After(llmRetryDelay):
-		}
-	}
 
-	decision.Created = job.Timestamp
-	decision.Modified = time.Now().UTC()
-	if err := q.organizer.Execute(ctx, job.ID, job.Content, decision); err != nil {
-		q.logger.Error("organizer execute failed", "job_id", job.ID, "error", err)
-		q.finalize(job, "", err)
-		return
+		decision.Created = job.Timestamp
+		decision.Modified = time.Now().UTC()
+		if err := q.organizer.Execute(ctx, job.ID, job.Content, decision); err != nil {
+			if errors.Is(err, store.ErrFileExists) && placementAttempt < maxPlacementAttempts {
+				conflictingPaths = append(conflictingPaths, decision.TargetPath)
+				q.logger.Warn("organizer selected existing target path — retrying placement",
+					"job_id", job.ID, "path", decision.TargetPath, "attempt", placementAttempt)
+				continue
+			}
+			q.logger.Error("organizer execute failed", "job_id", job.ID, "error", err)
+			q.finalize(job, "", err)
+			return
+		}
+		break
 	}
 
 	q.logger.Info("job completed successfully", "job_id", job.ID, "path", decision.TargetPath)
@@ -524,6 +518,26 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 		}
 		if err := q.recentLog.Append(e); err != nil {
 			q.logger.Warn("recentlog: append failed", "job_id", job.ID, "error", err)
+		}
+	}
+}
+
+func (q *Queue) decideWithRetry(ctx context.Context, job *Job, conflictingPaths []string) (*organizer.Decision, error) {
+	for attempt := 1; ; attempt++ {
+		decision, err := q.organizer.DecideAvoiding(ctx, job.Content, job.Hint, job.Tags, conflictingPaths)
+		if err == nil {
+			return decision, nil
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || attempt >= maxLLMAttempts {
+			q.logger.Error("organizer decision failed", "job_id", job.ID, "error", err, "attempt", attempt)
+			return nil, err
+		}
+		q.logger.Warn("LLM timed out — model likely loading, waiting before retry",
+			"job_id", job.ID, "attempt", attempt, "retry_in", llmRetryDelay)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(llmRetryDelay):
 		}
 	}
 }
