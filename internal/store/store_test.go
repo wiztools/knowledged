@@ -170,7 +170,7 @@ func TestPushOriginCurrentBranch_RetriesGitHubSSHOver443WhenPort22Blocked(t *tes
 	if err := os.WriteFile(fakeGit, []byte(`#!/bin/sh
 printf '%s\n' "$GIT_SSH_COMMAND" >> "$FAKE_GIT_LOG"
 case "$GIT_SSH_COMMAND" in
-  *ssh.github.com*Port=443*) exit 0 ;;
+  *ssh.github.com*Port=443*HostKeyAlias=github.com*) exit 0 ;;
 esac
 echo "ssh: connect to host github.com port 22: Connection refused" >&2
 echo "fatal: Could not read from remote repository." >&2
@@ -196,8 +196,10 @@ exit 128
 	if lines[0] != "" {
 		t.Fatalf("expected first attempt to use default SSH command, got %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "ssh.github.com") || !strings.Contains(lines[1], "Port=443") {
-		t.Fatalf("expected fallback to force GitHub SSH over port 443, got %q", lines[1])
+	if !strings.Contains(lines[1], "ssh.github.com") ||
+		!strings.Contains(lines[1], "Port=443") ||
+		!strings.Contains(lines[1], "HostKeyAlias=github.com") {
+		t.Fatalf("expected fallback to force GitHub SSH over port 443 using github.com host key alias, got %q", lines[1])
 	}
 }
 

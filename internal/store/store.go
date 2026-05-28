@@ -489,7 +489,7 @@ func (s *Store) PushOriginCurrentBranch() error {
 		if isGitHubSSHRemote(urls) && isSSHPort22Failure(msg) {
 			s.logger.Info("git push over SSH port 22 failed; retrying GitHub SSH over port 443", "branch", branch)
 			out, execErr = runGitPush(s.repoPath, branch, []string{
-				"GIT_SSH_COMMAND=ssh -o HostName=ssh.github.com -o Port=443",
+				"GIT_SSH_COMMAND=ssh -o HostName=ssh.github.com -o Port=443 -o HostKeyAlias=github.com",
 			})
 			if execErr == nil {
 				return nil
