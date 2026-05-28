@@ -148,6 +148,59 @@ func TestPushOriginCurrentBranch(t *testing.T) {
 	}
 }
 
+func TestPushOriginCurrentBranch_RetriesGitHubSSHOver443WhenPort22Blocked(t *testing.T) {
+	st := newTestStore(t)
+
+	if err := st.WriteFile("notes/hello.md", "hello world"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := st.Commit("add hello"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if _, err := st.repo.CreateRemote(&config.RemoteConfig{
+		Name: "origin",
+		URLs: []string{"git@github.com:subwiz/my-knowledge.git"},
+	}); err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "git.log")
+	fakeGit := filepath.Join(binDir, "git")
+	if err := os.WriteFile(fakeGit, []byte(`#!/bin/sh
+printf '%s\n' "$GIT_SSH_COMMAND" >> "$FAKE_GIT_LOG"
+case "$GIT_SSH_COMMAND" in
+  *ssh.github.com*Port=443*) exit 0 ;;
+esac
+echo "ssh: connect to host github.com port 22: Connection refused" >&2
+echo "fatal: Could not read from remote repository." >&2
+exit 128
+`), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("FAKE_GIT_LOG", logPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := st.PushOriginCurrentBranch(); err != nil {
+		t.Fatalf("PushOriginCurrentBranch: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile fake git log: %v", err)
+	}
+	lines := strings.Split(string(logBytes), "\n")
+	if len(lines) != 3 || lines[2] != "" {
+		t.Fatalf("expected two git push attempts, got log %q", string(logBytes))
+	}
+	if lines[0] != "" {
+		t.Fatalf("expected first attempt to use default SSH command, got %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "ssh.github.com") || !strings.Contains(lines[1], "Port=443") {
+		t.Fatalf("expected fallback to force GitHub SSH over port 443, got %q", lines[1])
+	}
+}
+
 func TestNew_CreatesHiddenStateDirAndIgnoresIt(t *testing.T) {
 	dir := t.TempDir()
 	var logs bytes.Buffer

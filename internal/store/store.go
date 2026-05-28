@@ -482,16 +482,61 @@ func (s *Store) PushOriginCurrentBranch() error {
 		}
 	}
 
-	out, execErr := exec.Command("git", "-C", s.repoPath, "push", "--porcelain", "origin", head.Name().Short()).CombinedOutput()
+	branch := head.Name().Short()
+	out, execErr := runGitPush(s.repoPath, branch, nil)
 	if execErr != nil {
-		msg := strings.ReplaceAll(strings.TrimSpace(string(out)), "\r\n", "\n")
-		if msg != "" {
-			return fmt.Errorf("pushing branch %s to origin: %s", head.Name().Short(), msg)
+		msg := normalizeGitOutput(out)
+		if isGitHubSSHRemote(urls) && isSSHPort22Failure(msg) {
+			s.logger.Info("git push over SSH port 22 failed; retrying GitHub SSH over port 443", "branch", branch)
+			out, execErr = runGitPush(s.repoPath, branch, []string{
+				"GIT_SSH_COMMAND=ssh -o HostName=ssh.github.com -o Port=443",
+			})
+			if execErr == nil {
+				return nil
+			}
+			msg = normalizeGitOutput(out)
 		}
-		return fmt.Errorf("pushing branch %s to origin: %w", head.Name().Short(), execErr)
+		if msg != "" {
+			return fmt.Errorf("pushing branch %s to origin: %s", branch, msg)
+		}
+		return fmt.Errorf("pushing branch %s to origin: %w", branch, execErr)
 	}
 
 	return nil
+}
+
+func runGitPush(repoPath, branch string, env []string) ([]byte, error) {
+	cmd := exec.Command("git", "-C", repoPath, "push", "--porcelain", "origin", branch)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	return cmd.CombinedOutput()
+}
+
+func normalizeGitOutput(out []byte) string {
+	return strings.ReplaceAll(strings.TrimSpace(string(out)), "\r\n", "\n")
+}
+
+func isGitHubSSHRemote(urls []string) bool {
+	if len(urls) == 0 {
+		return false
+	}
+	url := strings.ToLower(strings.TrimSpace(urls[0]))
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return false
+	}
+	return strings.Contains(url, "github.com:") || strings.Contains(url, "github.com/")
+}
+
+func isSSHPort22Failure(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "port 22") &&
+		(strings.Contains(lower, "connection refused") ||
+			strings.Contains(lower, "connection closed") ||
+			strings.Contains(lower, "operation timed out") ||
+			strings.Contains(lower, "network is unreachable") ||
+			strings.Contains(lower, "no route to host") ||
+			strings.Contains(lower, "undefined error"))
 }
 
 // FindCommitByJobID searches recent git history for a commit whose message
