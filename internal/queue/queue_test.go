@@ -430,14 +430,49 @@ func TestPushOriginCurrentBranch_LogsErrorOnFailure(t *testing.T) {
 		t.Fatalf("queue.New: %v", err)
 	}
 
-	q.pushOriginCurrentBranch()
+	q.pushOriginCurrentBranch(time.Now())
 
 	out := logs.String()
 	if !strings.Contains(out, "level=ERROR") {
 		t.Fatalf("expected error log, got %q", out)
 	}
+	if !strings.Contains(out, "periodic git push started") {
+		t.Fatalf("expected periodic push start log message, got %q", out)
+	}
 	if !strings.Contains(out, "periodic git push failed") {
 		t.Fatalf("expected periodic push log message, got %q", out)
+	}
+	if !strings.Contains(out, "duration=") {
+		t.Fatalf("expected periodic push duration, got %q", out)
+	}
+}
+
+func TestRunScheduledPush_LogsSkippedWithoutOrigin(t *testing.T) {
+	dir := t.TempDir()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if _, err := git.PlainInit(dir, false); err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	st, err := store.New(dir, logger)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	q, err := New(st, nil, nil, nil, logger, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("queue.New: %v", err)
+	}
+
+	q.runScheduledPush()
+
+	out := logs.String()
+	if !strings.Contains(out, "periodic git push skipped") {
+		t.Fatalf("expected periodic push skip log message, got %q", out)
+	}
+	if !strings.Contains(out, "reason=\"origin remote not configured\"") {
+		t.Fatalf("expected skip reason, got %q", out)
 	}
 }
 

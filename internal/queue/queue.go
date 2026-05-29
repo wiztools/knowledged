@@ -423,20 +423,33 @@ func (q *Queue) runScheduledPush() {
 		return
 	}
 	if !hasOrigin {
+		q.logger.Info("periodic git push skipped", "reason", "origin remote not configured")
 		return
 	}
 
-	attemptedAt := time.Now().UTC()
-	if err := q.writeLastOriginPushAttempt(attemptedAt); err != nil {
+	attemptedAt := time.Now()
+	if err := q.writeLastOriginPushAttempt(attemptedAt.UTC()); err != nil {
 		q.logger.Error("failed to persist origin push state", "error", err)
 	}
-	q.pushOriginCurrentBranch()
+	q.pushOriginCurrentBranch(attemptedAt)
 }
 
-func (q *Queue) pushOriginCurrentBranch() {
+func (q *Queue) pushOriginCurrentBranch(startedAt time.Time) {
+	q.logger.Info("periodic git push started",
+		"attempted_at", startedAt.UTC(),
+		"interval", q.pushOriginEvery)
+
 	if err := q.store.PushOriginCurrentBranch(); err != nil {
-		q.logger.Error("periodic git push failed", "error", err)
+		q.logger.Error("periodic git push failed",
+			"error", err,
+			"attempted_at", startedAt.UTC(),
+			"duration", time.Since(startedAt))
+		return
 	}
+
+	q.logger.Info("periodic git push succeeded",
+		"attempted_at", startedAt.UTC(),
+		"duration", time.Since(startedAt))
 }
 
 // nextQueued returns the oldest job with status "queued", atomically marking
