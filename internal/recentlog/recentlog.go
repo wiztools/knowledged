@@ -11,7 +11,7 @@ import (
 )
 
 const compactThreshold = 512
-const keepCount = 20
+const keepCount = 32
 
 // Entry is one line in the JSONL append log.
 type Entry struct {

@@ -349,10 +349,11 @@ documents in the knowledge base.
 
 ### `GET /posts/recents`
 
-Returns up to the 20 most recently stored documents, newest first. Tags are
-hydrated from each document's YAML frontmatter; documents that have been
-deleted or whose frontmatter is unparseable are returned without a `tags`
-field rather than failing the whole request.
+Returns up to the 20 most recently stored documents by default, newest first.
+Pass `?limit=32` to request more entries; values above 256 are capped. Tags are
+hydrated from each document's YAML frontmatter; documents that have been deleted
+or whose frontmatter is unparseable are returned without a `tags` field rather
+than failing the whole request.
 
 ```json
 {

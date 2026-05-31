@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/wiztools/knowledged/internal/llm"
@@ -672,11 +673,22 @@ type recentPostsResponse struct {
 	Posts []recentlog.Entry `json:"posts"`
 }
 
-// GetRecentPosts returns the 20 most recently stored documents, newest first.
+const (
+	defaultRecentPostsLimit = 20
+	maxRecentPostsLimit     = 256
+)
+
+// GetRecentPosts returns recent stored documents, newest first.
 func (h *Handler) GetRecentPosts(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("GET /posts/recents")
 
-	entries, err := h.recentLog.Recent(20)
+	limit, err := recentPostsLimit(r)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	entries, err := h.recentLog.Recent(limit)
 	if err != nil {
 		h.logger.Error("recentlog read failed", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "failed to read recent posts: "+err.Error())
@@ -699,6 +711,21 @@ func (h *Handler) GetRecentPosts(w http.ResponseWriter, r *http.Request) {
 		entries[i].Tags = fm.Tags
 	}
 	h.writeJSON(w, http.StatusOK, recentPostsResponse{Posts: entries})
+}
+
+func recentPostsLimit(r *http.Request) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if raw == "" {
+		return defaultRecentPostsLimit, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 {
+		return 0, fmt.Errorf("limit must be a positive integer")
+	}
+	if limit > maxRecentPostsLimit {
+		return maxRecentPostsLimit, nil
+	}
+	return limit, nil
 }
 
 // ── GET /tags ────────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/wiztools/knowledged/internal/llm"
 	"github.com/wiztools/knowledged/internal/queue"
+	"github.com/wiztools/knowledged/internal/recentlog"
 	"github.com/wiztools/knowledged/internal/store"
 	"github.com/wiztools/knowledged/internal/tagindex"
 )
@@ -154,6 +156,60 @@ func TestDeleteContent_Returns202(t *testing.T) {
 	}
 	if resp.Status != "queued" {
 		t.Errorf("expected status %q, got %q", "queued", resp.Status)
+	}
+}
+
+func TestGetRecentPosts_UsesRequestedLimit(t *testing.T) {
+	h, st := newTestHandler(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rl := recentlog.New(st.StatePath("recent.jsonl"), logger)
+	h.recentLog = rl
+
+	for i := 1; i <= 35; i++ {
+		path := fmt.Sprintf("notes/post-%02d.md", i)
+		ts := time.Date(2026, 5, 31, 12, i, 0, 0, time.UTC)
+		content := store.RenderFrontmatter(store.Frontmatter{
+			Title:       fmt.Sprintf("Post %02d", i),
+			Description: "Test post",
+			Tags:        []string{fmt.Sprintf("tag-%02d", i)},
+			Created:     ts,
+			Modified:    ts,
+		}, fmt.Sprintf("# Post %02d\n", i))
+		if err := st.WriteFile(path, content); err != nil {
+			t.Fatalf("WriteFile %s: %v", path, err)
+		}
+		if err := rl.Append(recentlog.Entry{
+			JobID:     fmt.Sprintf("job-%02d", i),
+			Path:      path,
+			CreatedAt: ts,
+		}); err != nil {
+			t.Fatalf("Append %s: %v", path, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/posts/recents?limit=32", nil)
+	rec := httptest.NewRecorder()
+
+	h.GetRecentPosts(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp recentPostsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Posts) != 32 {
+		t.Fatalf("len(posts) = %d, want 32", len(resp.Posts))
+	}
+	if got, want := resp.Posts[0].JobID, "job-35"; got != want {
+		t.Fatalf("first job = %s, want %s", got, want)
+	}
+	if got, want := resp.Posts[31].JobID, "job-04"; got != want {
+		t.Fatalf("last job = %s, want %s", got, want)
+	}
+	if got, want := resp.Posts[0].Tags, []string{"tag-35"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("first tags = %v, want %v", got, want)
 	}
 }
 
