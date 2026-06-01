@@ -63,12 +63,12 @@ func TestEnqueue_DeduplicatesActiveJobs(t *testing.T) {
 	q, _ := newTestQueue(t)
 
 	content := "some knowledge content"
-	first, err := q.Enqueue(content, "hint", []string{"tag"})
+	first, err := q.Enqueue(content, "hint", "", []string{"tag"})
 	if err != nil {
 		t.Fatalf("first Enqueue: %v", err)
 	}
 
-	second, err := q.Enqueue(content, "hint", []string{"tag"})
+	second, err := q.Enqueue(content, "hint", "", []string{"tag"})
 	if err != nil {
 		t.Fatalf("second Enqueue: %v", err)
 	}
@@ -86,11 +86,30 @@ func TestEnqueue_DeduplicatesActiveJobs(t *testing.T) {
 	}
 }
 
+func TestEnqueue_DistinguishesActiveJobsByMetadata(t *testing.T) {
+	q, _ := newTestQueue(t)
+
+	content := "some knowledge content"
+	first, err := q.Enqueue(content, "hint", "First Title", []string{"tag"})
+	if err != nil {
+		t.Fatalf("first Enqueue: %v", err)
+	}
+
+	second, err := q.Enqueue(content, "hint", "Second Title", []string{"tag"})
+	if err != nil {
+		t.Fatalf("second Enqueue: %v", err)
+	}
+
+	if first.ID == second.ID {
+		t.Fatal("expected different title metadata to create a separate active job")
+	}
+}
+
 func TestEnqueue_AllowsRepostAfterCompletion(t *testing.T) {
 	q, _ := newTestQueue(t)
 
 	content := "some knowledge content"
-	first, err := q.Enqueue(content, "hint", nil)
+	first, err := q.Enqueue(content, "hint", "", nil)
 	if err != nil {
 		t.Fatalf("first Enqueue: %v", err)
 	}
@@ -109,7 +128,7 @@ func TestEnqueue_AllowsRepostAfterCompletion(t *testing.T) {
 	q.results[first.ID] = first
 	q.resultsMu.Unlock()
 
-	second, err := q.Enqueue(content, "hint", nil)
+	second, err := q.Enqueue(content, "hint", "", nil)
 	if err != nil {
 		t.Fatalf("second Enqueue after completion: %v", err)
 	}
@@ -122,7 +141,7 @@ func TestEnqueue_AllowsRepostAfterCompletion(t *testing.T) {
 func TestEnqueue_ContentHashSet(t *testing.T) {
 	q, _ := newTestQueue(t)
 
-	job, err := q.Enqueue("hello world", "", nil)
+	job, err := q.Enqueue("hello world", "", "", nil)
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -175,7 +194,7 @@ func TestProcessJobRetriesPlacementOnExistingTargetPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
-	job, err := q.Enqueue("Go supports type parameters.", "go generics", nil)
+	job, err := q.Enqueue("Go supports type parameters.", "go generics", "", nil)
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

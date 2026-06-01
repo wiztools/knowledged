@@ -90,7 +90,7 @@ func TestDecide_TwoPass_RouteThenPlace(t *testing.T) {
 
 	org, llm, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
 
-	d, err := org.Decide(context.Background(), "Go 1.18 added generics. Use [T any] in function signatures.", "go generics", nil)
+	d, err := org.Decide(context.Background(), "Go 1.18 added generics. Use [T any] in function signatures.", "go generics", "", nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestDecide_NewSectionAppended(t *testing.T) {
 
 	org, _, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
 
-	d, err := org.Decide(context.Background(), "React is a component library", "react", nil)
+	d, err := org.Decide(context.Background(), "React is a component library", "react", "", nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -151,12 +151,77 @@ func TestDecide_NewSectionAppended(t *testing.T) {
 	}
 }
 
+func TestDecide_UsesSuppliedTitleAndTags(t *testing.T) {
+	routeReply := `{"candidate_sections":["Go"],"proposed_new_section":""}`
+	placeReply := `{
+  "target_path": "tech/go/generics.md",
+  "title": "Model Title",
+  "description": "Type parameters in Go",
+  "tags": ["model-tag"],
+  "refactors": [],
+  "updated_sections": [
+    {"name": "Go", "body": "- [Model Title](tech/go/generics.md) — type parameters in Go\n"}
+  ]
+}`
+
+	org, llm, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
+
+	d, err := org.Decide(context.Background(), "Go 1.18 added generics.", "go generics", "User Title", []string{"go", "language"})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	if d.Title != "User Title" {
+		t.Fatalf("Title = %q, want supplied title", d.Title)
+	}
+	if got, want := strings.Join(d.Tags, ","), "go,language"; got != want {
+		t.Fatalf("Tags = %q, want %q", got, want)
+	}
+	if !strings.Contains(d.UpdatedIndex, "[User Title](tech/go/generics.md)") {
+		t.Fatalf("UpdatedIndex did not preserve supplied title:\n%s", d.UpdatedIndex)
+	}
+	if !strings.Contains(llm.calls[1].user, "Title from user: User Title") {
+		t.Fatalf("placement prompt missing supplied title:\n%s", llm.calls[1].user)
+	}
+	if !strings.Contains(llm.calls[1].user, "Tags from user: go, language") {
+		t.Fatalf("placement prompt missing supplied tags:\n%s", llm.calls[1].user)
+	}
+}
+
+func TestDecide_UsesGeneratedTagsWhenNoTagsSupplied(t *testing.T) {
+	routeReply := `{"candidate_sections":["Go"],"proposed_new_section":""}`
+	placeReply := `{
+  "target_path": "tech/go/generics.md",
+  "title": "Go Generics",
+  "description": "Type parameters in Go",
+  "tags": ["go", "generics"],
+  "refactors": [],
+  "updated_sections": [
+    {"name": "Go", "body": "- [Go Generics](tech/go/generics.md) — type parameters in Go\n"}
+  ]
+}`
+
+	org, _, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
+
+	d, err := org.Decide(context.Background(), "Go 1.18 added generics.", "go generics", "", nil)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	if d.Title != "Go Generics" {
+		t.Fatalf("Title = %q, want generated title", d.Title)
+	}
+	if got, want := strings.Join(d.Tags, ","), "go,generics"; got != want {
+		t.Fatalf("Tags = %q, want %q", got, want)
+	}
+}
+
 func TestDecide_RejectsEmptyTargetPath(t *testing.T) {
 	org, _, _ := newOrganizerWithIndex(t, seedIndex, []string{
 		`{"candidate_sections":["Go"],"proposed_new_section":""}`,
 		`{"target_path":"","title":"x","description":"x","updated_sections":[{"name":"Go","body":"-"}]}`,
 	})
-	if _, err := org.Decide(context.Background(), "x", "", nil); err == nil {
+	if _, err := org.Decide(context.Background(), "x", "", "", nil); err == nil {
 		t.Fatal("expected error for empty target_path, got nil")
 	}
 }
@@ -166,7 +231,7 @@ func TestDecide_RejectsMissingUpdatedSections(t *testing.T) {
 		`{"candidate_sections":["Go"],"proposed_new_section":""}`,
 		`{"target_path":"tech/go/x.md","title":"x","description":"x","updated_sections":[]}`,
 	})
-	if _, err := org.Decide(context.Background(), "x", "", nil); err == nil {
+	if _, err := org.Decide(context.Background(), "x", "", "", nil); err == nil {
 		t.Fatal("expected error for empty updated_sections, got nil")
 	}
 }
@@ -176,7 +241,7 @@ func TestDecide_UsesStructuredOutput(t *testing.T) {
 	placeReply := `{"target_path":"tech/go/x.md","title":"x","description":"x","updated_sections":[{"name":"Go","body":"- [x](tech/go/x.md) — y\n"}]}`
 
 	org, llm, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
-	if _, err := org.Decide(context.Background(), "x", "", nil); err != nil {
+	if _, err := org.Decide(context.Background(), "x", "", "", nil); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	if len(llm.calls) != 2 {
@@ -203,7 +268,7 @@ func TestDecideAvoidingWarnsAboutExistingTargetPath(t *testing.T) {
 	placeReply := `{"target_path":"tech/go/generics-2.md","title":"x","description":"x","updated_sections":[{"name":"Go","body":"- [x](tech/go/generics-2.md) — y\n"}]}`
 
 	org, llm, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
-	if _, err := org.DecideAvoiding(context.Background(), "x", "", nil, []string{"tech/go/generics.md"}); err != nil {
+	if _, err := org.DecideAvoiding(context.Background(), "x", "", "", nil, []string{"tech/go/generics.md"}); err != nil {
 		t.Fatalf("DecideAvoiding: %v", err)
 	}
 	if !strings.Contains(llm.calls[0].user, "tech/go/generics.md") {
@@ -221,7 +286,7 @@ func TestDecide_EmptyIndex(t *testing.T) {
 	// Use the bootstrapped (empty) index.
 	org, llm, _ := newOrganizerWithIndex(t, "", []string{routeReply, placeReply})
 
-	d, err := org.Decide(context.Background(), "Go is a language", "", nil)
+	d, err := org.Decide(context.Background(), "Go is a language", "", "", nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}

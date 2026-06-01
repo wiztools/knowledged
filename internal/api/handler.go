@@ -48,6 +48,7 @@ func NewHandler(q *queue.Queue, st *store.Store, provider llm.Provider, rl *rece
 type postContentRequest struct {
 	Content string   `json:"content"`
 	Hint    string   `json:"hint,omitempty"`
+	Title   string   `json:"title,omitempty"`
 	Tags    []string `json:"tags,omitempty"`
 }
 
@@ -70,10 +71,11 @@ func (h *Handler) PostContent(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Info("received POST /content request",
 		"hint", req.Hint,
+		"title", req.Title,
 		"tags", req.Tags,
 		"content_len", len(req.Content))
 
-	job, err := h.queue.Enqueue(req.Content, req.Hint, req.Tags)
+	job, err := h.queue.Enqueue(req.Content, req.Hint, strings.TrimSpace(req.Title), cleanTags(req.Tags))
 	if err != nil {
 		h.logger.Error("failed to enqueue job", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "failed to enqueue: "+err.Error())

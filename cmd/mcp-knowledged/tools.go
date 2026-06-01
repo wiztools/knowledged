@@ -25,8 +25,11 @@ func registerTools(s *server.MCPServer, c *Client) {
 			mcp.WithString("hint",
 				mcp.Description("Optional topic hint to help organize the document (e.g. 'golang', 'meeting-notes')"),
 			),
+			mcp.WithString("title",
+				mcp.Description("Optional document title. If omitted, the LLM organizer generates one."),
+			),
 			mcp.WithString("tags",
-				mcp.Description("Optional comma-separated tags (e.g. 'go,concurrency')"),
+				mcp.Description("Optional comma-separated tags (e.g. 'go,concurrency'). If omitted, the LLM organizer generates tags."),
 			),
 			mcp.WithBoolean("wait",
 				mcp.Description("If true, poll until the job completes and return the stored path. Default: false."),
@@ -123,6 +126,7 @@ func makePostContentHandler(c *Client) func(context.Context, mcp.CallToolRequest
 		}
 
 		hint := req.GetString("hint", "")
+		title := strings.TrimSpace(req.GetString("title", ""))
 		wait := req.GetBool("wait", false)
 
 		var tags []string
@@ -134,7 +138,7 @@ func makePostContentHandler(c *Client) func(context.Context, mcp.CallToolRequest
 			}
 		}
 
-		resp, err := c.PostContent(content, hint, tags)
+		resp, err := c.PostContent(content, hint, title, tags)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("post_content failed: %s", err)), nil
 		}

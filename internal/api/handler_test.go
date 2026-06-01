@@ -122,6 +122,33 @@ func newTestHandlerWithTags(t *testing.T) (*Handler, *store.Store) {
 	return NewHandler(q, st, nil, nil, ti, logger, 0), st
 }
 
+func TestPostContent_AcceptsTitleAndTags(t *testing.T) {
+	h, _ := newTestHandler(t)
+	body := []byte(`{"content":"Body.","hint":"go","title":"  Go Generics  ","tags":["go"," ","generics"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/content", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.PostContent(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var resp postContentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	job, ok := h.queue.GetJob(resp.JobID)
+	if !ok {
+		t.Fatalf("job %q not found", resp.JobID)
+	}
+	if job.Title != "Go Generics" {
+		t.Fatalf("Title = %q, want trimmed input title", job.Title)
+	}
+	if got, want := strings.Join(job.Tags, ","), "go,generics"; got != want {
+		t.Fatalf("Tags = %q, want %q", got, want)
+	}
+}
+
 func TestDeleteContent_Returns202(t *testing.T) {
 	h, st := newTestHandler(t)
 

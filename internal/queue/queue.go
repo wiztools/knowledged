@@ -54,7 +54,7 @@ type Job struct {
 	Hint        string     `json:"hint,omitempty"`
 	Tags        []string   `json:"tags,omitempty"`
 	Path        string     `json:"path,omitempty"`  // target path; set on enqueue for delete, after store for post
-	Title       string     `json:"title,omitempty"` // optional INDEX.md title update for edit
+	Title       string     `json:"title,omitempty"` // optional title for post/edit metadata
 	Description string     `json:"description,omitempty"`
 	Error       string     `json:"error,omitempty"` // set on failure
 }
@@ -137,10 +137,12 @@ func contentHash(content string) string {
 }
 
 // Enqueue appends a new job to the persistent queue and signals the worker.
-// If a job with the same content is already queued or processing, the existing
-// job is returned without creating a duplicate.
-func (q *Queue) Enqueue(content, hint string, tags []string) (*Job, error) {
+// If a job with the same content and metadata is already queued or processing,
+// the existing job is returned without creating a duplicate.
+func (q *Queue) Enqueue(content, hint, title string, tags []string) (*Job, error) {
 	hash := contentHash(content)
+	title = strings.TrimSpace(title)
+	tags = cleanTags(tags)
 
 	q.mu.Lock()
 	jobs, err := q.loadJobs()
@@ -150,7 +152,7 @@ func (q *Queue) Enqueue(content, hint string, tags []string) (*Job, error) {
 	}
 
 	for _, j := range jobs {
-		if j.ContentHash == hash && (j.Status == StatusQueued || j.Status == StatusProcessing) {
+		if isSameActivePost(j, hash, hint, title, tags) {
 			q.mu.Unlock()
 			q.logger.Info("duplicate content detected — returning existing job",
 				"existing_job_id", j.ID, "content_hash", hash)
@@ -165,7 +167,8 @@ func (q *Queue) Enqueue(content, hint string, tags []string) (*Job, error) {
 		Content:     content,
 		ContentHash: hash,
 		Hint:        hint,
-		Tags:        tags,
+		Tags:        append([]string(nil), tags...),
+		Title:       title,
 	}
 	jobs = append(jobs, job)
 	if err := q.saveJobs(jobs); err != nil {
@@ -537,7 +540,7 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 
 func (q *Queue) decideWithRetry(ctx context.Context, job *Job, conflictingPaths []string) (*organizer.Decision, error) {
 	for attempt := 1; ; attempt++ {
-		decision, err := q.organizer.DecideAvoiding(ctx, job.Content, job.Hint, job.Tags, conflictingPaths)
+		decision, err := q.organizer.DecideAvoiding(ctx, job.Content, job.Hint, job.Title, job.Tags, conflictingPaths)
 		if err == nil {
 			return decision, nil
 		}
@@ -553,6 +556,36 @@ func (q *Queue) decideWithRetry(ctx context.Context, job *Job, conflictingPaths 
 		case <-time.After(llmRetryDelay):
 		}
 	}
+}
+
+func isSameActivePost(j *Job, hash, hint, title string, tags []string) bool {
+	return j.ContentHash == hash &&
+		(j.Status == StatusQueued || j.Status == StatusProcessing) &&
+		j.Hint == hint &&
+		strings.TrimSpace(j.Title) == title &&
+		equalStringSlices(cleanTags(j.Tags), tags)
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanTags(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, tag := range in {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			out = append(out, tag)
+		}
+	}
+	return out
 }
 
 // executeDelete removes a file and its INDEX.md entry as a single atomic git commit.

@@ -103,6 +103,11 @@ func placementSchema() llm.Schema {
 					"type":        "string",
 					"description": "Required. One sentence, under 120 chars. Appears in the INDEX entry.",
 				},
+				"tags": map[string]any{
+					"type":        "array",
+					"description": "Required. If tags were provided by the user, return exactly those tags. Otherwise generate 1-5 short lowercase tags suitable for cataloging this note.",
+					"items":       map[string]any{"type": "string"},
+				},
 				"refactors": map[string]any{
 					"type":        "array",
 					"description": "Only file moves WITHIN the sections shown above. Always include this key; emit an empty array unless a move meaningfully improves placement.",
@@ -137,7 +142,7 @@ func placementSchema() llm.Schema {
 					},
 				},
 			},
-			"required":             []string{"target_path", "title", "description", "refactors", "updated_sections"},
+			"required":             []string{"target_path", "title", "description", "tags", "refactors", "updated_sections"},
 			"additionalProperties": false,
 		},
 	}
@@ -166,6 +171,7 @@ type placementDecision struct {
 	TargetPath      string           `json:"target_path"`
 	Title           string           `json:"title"`
 	Description     string           `json:"description"`
+	Tags            []string         `json:"tags"`
 	Refactors       []Refactor       `json:"refactors"`
 	UpdatedSections []updatedSection `json:"updated_sections"`
 }
@@ -199,20 +205,20 @@ func New(st *store.Store, provider llm.Provider, logger *slog.Logger) *Organizer
 
 // Decide runs the two-pass placement flow. The LLM never sees the full INDEX
 // at once — pass 1 sees only headings, pass 2 sees only the selected sections.
-func (o *Organizer) Decide(ctx context.Context, content, hint string, tags []string) (*Decision, error) {
-	return o.DecideAvoiding(ctx, content, hint, tags, nil)
+func (o *Organizer) Decide(ctx context.Context, content, hint, title string, tags []string) (*Decision, error) {
+	return o.DecideAvoiding(ctx, content, hint, title, tags, nil)
 }
 
 // DecideAvoiding runs the placement flow while telling the LLM to avoid target
 // paths that already conflicted during this post.
-func (o *Organizer) DecideAvoiding(ctx context.Context, content, hint string, tags []string, conflictingPaths []string) (*Decision, error) {
+func (o *Organizer) DecideAvoiding(ctx context.Context, content, hint, title string, tags []string, conflictingPaths []string) (*Decision, error) {
 	rawIndex, err := o.store.ReadIndex()
 	if err != nil {
 		return nil, fmt.Errorf("reading index: %w", err)
 	}
 	parsed := store.ParseIndex(rawIndex)
 
-	meta := buildMetaBlock(hint, tags)
+	meta := buildMetaBlock(hint, title, tags)
 	meta += buildConflictBlock(conflictingPaths)
 
 	// ── Pass 1: routing ──────────────────────────────────────────────────
@@ -266,9 +272,23 @@ func (o *Organizer) DecideAvoiding(ctx context.Context, content, hint string, ta
 		return nil, fmt.Errorf("parsing decide response: %w\nraw:\n%s", err, decideRaw)
 	}
 
+	resolvedTitle := strings.TrimSpace(title)
+	if resolvedTitle == "" {
+		resolvedTitle = strings.TrimSpace(placement.Title)
+	}
+	if resolvedTitle == "" {
+		return nil, fmt.Errorf("LLM returned empty title")
+	}
+
+	resolvedTags := cleanTags(tags)
+	if len(resolvedTags) == 0 {
+		resolvedTags = cleanTags(placement.Tags)
+	}
+
 	// Splice the updated sections back into the full index.
 	updates := make([]store.IndexSection, 0, len(placement.UpdatedSections))
 	for _, u := range placement.UpdatedSections {
+		u.Body = rewriteIndexEntryMetadata(u.Body, placement.TargetPath, resolvedTitle, placement.Description)
 		updates = append(updates, store.IndexSection{Name: u.Name, Body: u.Body})
 	}
 	mergedIndex := parsed.ReplaceSections(updates).Render()
@@ -280,9 +300,9 @@ func (o *Organizer) DecideAvoiding(ctx context.Context, content, hint string, ta
 
 	return &Decision{
 		TargetPath:   placement.TargetPath,
-		Title:        placement.Title,
+		Title:        resolvedTitle,
 		Description:  placement.Description,
-		Tags:         append([]string(nil), tags...),
+		Tags:         resolvedTags,
 		Refactors:    placement.Refactors,
 		UpdatedIndex: mergedIndex,
 	}, nil
@@ -368,15 +388,48 @@ func countBulletLines(body string) int {
 	return n
 }
 
-func buildMetaBlock(hint string, tags []string) string {
+func buildMetaBlock(hint, title string, tags []string) string {
 	var sb strings.Builder
 	if hint != "" {
 		fmt.Fprintf(&sb, "\nHint from user: %s\n", hint)
 	}
-	if len(tags) > 0 {
-		fmt.Fprintf(&sb, "Tags: %s\n", strings.Join(tags, ", "))
+	if strings.TrimSpace(title) != "" {
+		fmt.Fprintf(&sb, "Title from user: %s\nUse this exact title for the new document.\n", strings.TrimSpace(title))
+	}
+	cleanedTags := cleanTags(tags)
+	if len(cleanedTags) > 0 {
+		fmt.Fprintf(&sb, "Tags from user: %s\nUse these exact tags for the new document.\n", strings.Join(cleanedTags, ", "))
+	} else {
+		sb.WriteString("Tags from user: (none provided)\n")
 	}
 	return sb.String()
+}
+
+func cleanTags(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, tag := range in {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			out = append(out, tag)
+		}
+	}
+	return out
+}
+
+func rewriteIndexEntryMetadata(body, path, title, description string) string {
+	lines := strings.Split(body, "\n")
+	link := "](" + path + ")"
+	for i, line := range lines {
+		if !strings.Contains(line, link) {
+			continue
+		}
+		next := "- [" + strings.TrimSpace(title) + "](" + path + ")"
+		if strings.TrimSpace(description) != "" {
+			next += " — " + strings.TrimSpace(description)
+		}
+		lines[i] = next
+		break
+	}
+	return strings.Join(lines, "\n")
 }
 
 func buildConflictBlock(paths []string) string {

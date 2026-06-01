@@ -29,6 +29,7 @@ func NewClient(base string) *Client {
 type postContentRequest struct {
 	Content string   `json:"content"`
 	Hint    string   `json:"hint,omitempty"`
+	Title   string   `json:"title,omitempty"`
 	Tags    []string `json:"tags,omitempty"`
 }
 
@@ -87,8 +88,8 @@ func (c *Client) DeleteContent(path string) (*postContentResponse, error) {
 }
 
 // PostContent enqueues a store job and returns the job ID and initial status.
-func (c *Client) PostContent(content, hint string, tags []string) (*postContentResponse, error) {
-	body := postContentRequest{Content: content, Hint: hint, Tags: tags}
+func (c *Client) PostContent(content, hint, title string, tags []string) (*postContentResponse, error) {
+	body := postContentRequest{Content: content, Hint: hint, Title: title, Tags: tags}
 	var resp postContentResponse
 	if err := c.postJSON("/content", body, &resp); err != nil {
 		return nil, err
