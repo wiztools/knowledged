@@ -632,7 +632,7 @@ func TestParseNeedFull_DetectsJSONShape(t *testing.T) {
 
 func TestPostAsk_ReturnsAnswerAndTags(t *testing.T) {
 	fake := &fakeLLM{replies: []string{
-		`{"answer":"## Goroutines\n\nLightweight threads managed by the Go runtime.\n","tags":["golang","concurrency"," "]}`,
+		`{"title":"Go Goroutines.","answer":"## Goroutines\n\nLightweight threads managed by the Go runtime.\n","tags":["golang","concurrency"," "]}`,
 	}}
 	h, _ := newTestHandlerWithLLM(t, fake)
 
@@ -648,6 +648,7 @@ func TestPostAsk_ReturnsAnswerAndTags(t *testing.T) {
 	}
 	var resp struct {
 		Question string   `json:"question"`
+		Title    string   `json:"title"`
 		Answer   string   `json:"answer"`
 		Tags     []string `json:"tags"`
 	}
@@ -656,6 +657,9 @@ func TestPostAsk_ReturnsAnswerAndTags(t *testing.T) {
 	}
 	if resp.Question != "what are goroutines?" {
 		t.Errorf("question = %q, want %q", resp.Question, "what are goroutines?")
+	}
+	if resp.Title != "Go Goroutines" {
+		t.Errorf("title = %q, want %q", resp.Title, "Go Goroutines")
 	}
 	if !strings.HasPrefix(resp.Answer, "## Goroutines") {
 		t.Errorf("answer should preserve Markdown, got %q", resp.Answer)
@@ -680,13 +684,13 @@ func TestPostAsk_ReturnsAnswerAndTags(t *testing.T) {
 	if fake.calls[0].user != "what are goroutines?" {
 		t.Errorf("user prompt = %q, want raw question", fake.calls[0].user)
 	}
-	if !strings.Contains(fake.calls[0].system, "tags") {
-		t.Error("system prompt should mention tags")
+	if !strings.Contains(fake.calls[0].system, "title") || !strings.Contains(fake.calls[0].system, "tags") {
+		t.Error("system prompt should mention title and tags")
 	}
 }
 
 func TestPostAsk_ForwardsReasoningBudget(t *testing.T) {
-	fake := &fakeLLM{replies: []string{`{"answer":"## X\n\nstub","tags":[]}`}}
+	fake := &fakeLLM{replies: []string{`{"title":"X","answer":"## X\n\nstub","tags":[]}`}}
 	h, _ := newTestHandlerWithBudget(t, fake, 2048)
 
 	body, _ := json.Marshal(map[string]string{"question": "what is X?"})
@@ -708,7 +712,7 @@ func TestPostAsk_ForwardsReasoningBudget(t *testing.T) {
 }
 
 func TestPostAsk_ZeroBudgetSkipsReasoning(t *testing.T) {
-	fake := &fakeLLM{replies: []string{`{"answer":"## X\n\nstub","tags":[]}`}}
+	fake := &fakeLLM{replies: []string{`{"title":"X","answer":"## X\n\nstub","tags":[]}`}}
 	h, _ := newTestHandlerWithBudget(t, fake, 0)
 
 	body, _ := json.Marshal(map[string]string{"question": "what is X?"})
@@ -725,7 +729,7 @@ func TestPostAsk_ZeroBudgetSkipsReasoning(t *testing.T) {
 
 func TestPostAsk_EmptyTagsSerializeAsEmptyArray(t *testing.T) {
 	fake := &fakeLLM{replies: []string{
-		`{"answer":"## Unknown\n\nI don't know.","tags":[]}`,
+		`{"title":"Unknown","answer":"## Unknown\n\nI don't know.","tags":[]}`,
 	}}
 	h, _ := newTestHandlerWithLLM(t, fake)
 

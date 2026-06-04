@@ -588,13 +588,14 @@ func runAsk(server string, args []string, logger *slog.Logger, asJSON bool) {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: kc ask --question "..."
 
-Ask the configured LLM to draft a Markdown explanation plus suggested
-tags. The answer goes to stdout, the suggested tags go to stderr —
-safe to pipe into 'kc post' without contaminating the content:
+Ask the configured LLM to draft a document title, Markdown explanation,
+and suggested tags. The answer goes to stdout; the suggested title and
+tags go to stderr — safe to pipe into 'kc post' without contaminating
+the content:
 
   kc ask --question "what are goroutines?" | kc post --hint golang
 
-Use --json (global flag) to receive the full {question, answer, tags}
+Use --json (global flag) to receive the full {question, title, answer, tags}
 object on stdout instead.
 
 Flags:`)
@@ -624,6 +625,7 @@ Flags:`)
 
 	var resp struct {
 		Question string   `json:"question"`
+		Title    string   `json:"title"`
 		Answer   string   `json:"answer"`
 		Tags     []string `json:"tags"`
 		Error    string   `json:"error"`
@@ -634,8 +636,14 @@ Flags:`)
 	if resp.Error != "" {
 		fatal(logger, "server error", fmt.Errorf("%s", resp.Error))
 	}
+	if strings.TrimSpace(resp.Title) != "" {
+		fmt.Fprintf(os.Stderr, "title: %s\n", strings.TrimSpace(resp.Title))
+	}
 	if len(resp.Tags) > 0 {
-		fmt.Fprintf(os.Stderr, "tags: %s\n\n", strings.Join(resp.Tags, ", "))
+		fmt.Fprintf(os.Stderr, "tags: %s\n", strings.Join(resp.Tags, ", "))
+	}
+	if strings.TrimSpace(resp.Title) != "" || len(resp.Tags) > 0 {
+		fmt.Fprintln(os.Stderr)
 	}
 	fmt.Println(resp.Answer)
 }

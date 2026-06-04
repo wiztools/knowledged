@@ -236,22 +236,23 @@ Status values: `queued` | `processing` | `done` | `failed`
 ### `kc ask` — draft an answer from the LLM
 
 Sends a single-turn question to the configured LLM. The Markdown answer
-is printed to stdout and the suggested tags to stderr — safe to pipe
-into `kc post` without contaminating the content. Nothing is stored
-until you do that.
+is printed to stdout and the suggested title and tags to stderr — safe
+to pipe into `kc post` without contaminating the content. Nothing is
+stored until you do that.
 Drafted answers omit a top-level H1 because stored notes keep the title in
 frontmatter; section headings, when useful, start at `##`.
 
 ```sh
 kc ask --question "what are goroutines?"
 # stdout: the Markdown answer
+# stderr: title: Go Goroutines
 # stderr: tags: golang, concurrency
 
 # Draft and store in one shot (review the draft first in practice)
 kc ask --question "what are goroutines?" | kc post --hint golang
 
 # Full structured response for scripting
-kc --json ask --question "what are goroutines?" | jq '{answer, tags}'
+kc --json ask --question "what are goroutines?" | jq '{title, answer, tags}'
 ```
 
 | Flag | Default | Description |
@@ -383,13 +384,14 @@ stale against the repository HEAD.
 
 ### `POST /ask`
 
-Drafts a Markdown explanation and suggested tags from the configured LLM.
-Stores nothing — intended for clients that want to prefill a
-"review-and-post" form. The human is always the one who decides whether
-the answer and tags become a stored document via `POST /content`.
+Drafts a document title, Markdown explanation, and suggested tags from
+the configured LLM. Stores nothing — intended for clients that want to
+prefill a "review-and-post" form. The human is always the one who
+decides whether the title, answer, and tags become a stored document via
+`POST /content`.
 
 Internally uses structured output (Anthropic tool_use / Ollama `format` /
-Jan json_schema) so the `tags` and `answer` fields are guaranteed
+Jan json_schema) so the `title`, `answer`, and `tags` fields are guaranteed
 to be present. When `--ask-reasoning-budget` is non-zero (default 2000),
 the call also opts into provider-native chain-of-thought — Ollama
 `think=true` or Jan `reasoning_effort` — which improves answer quality
@@ -408,6 +410,7 @@ on supporting models and is silently ignored elsewhere.
 // Response 200
 {
   "question": "what are goroutines?",
+  "title":    "Go Goroutines",
   "answer":   "## Goroutines\n\n...",
   "tags":     ["golang", "concurrency"]
 }

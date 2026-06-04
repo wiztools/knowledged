@@ -96,35 +96,41 @@ type askRequest struct {
 
 type askResponse struct {
 	Question string   `json:"question"`
+	Title    string   `json:"title"`
 	Answer   string   `json:"answer"`
 	Tags     []string `json:"tags"`
 }
 
-// askSystemPrompt asks the model for a polished Markdown explanation plus
-// suggested tags, suitable for human review before being committed to the
-// knowledge base. The "think step-by-step" nudge gives non-reasoning models
-// some quality lift; providers that natively support reasoning tokens can
-// also benefit when the Provider interface learns to plumb that flag through.
+// askSystemPrompt asks the model for a title, polished Markdown explanation,
+// and suggested tags, suitable for human review before being committed to the
+// knowledge base.
 const askSystemPrompt = `You are a careful technical writer helping the user capture knowledge for their personal knowledge base.
 
 The user is asking because they want to understand and learn the concept themselves — they will read the answer, possibly edit it, and save it as study notes for future reference. Write for an intelligent reader who is encountering this concept fresh: build the explanation up from what they already plausibly know, and pause to define any prerequisite term, jargon, or related concept that someone new to the area would not yet understand. Inline definitions are usually better than forward references.
 
-For the user's question, produce two outputs:
+For the user's question, produce three outputs:
 
-1. ` + "`answer`" + ` — a clear, well-structured Markdown explanation suitable for later reference. Aim for the level of a senior engineer briefing a teammate who is new to the topic: accurate, concrete, with small examples where they help. Do not include a top-level Markdown H1 title; the saved document title is stored separately in frontmatter. Start with the explanatory body directly, using ## or lower headings for sections only when useful. No preamble, no meta-commentary, no "Here is an explanation of…".
+1. ` + "`title`" + ` — a concise human document title, ideally 2 to 8 words and under 80 characters. Use title case unless the topic has conventional casing. Do not include Markdown, quotes, trailing punctuation, or generic prefixes like "Understanding".
 
-2. ` + "`tags`" + ` — 1 to 5 short lowercase tags suitable for cataloging this knowledge in a tag-indexed knowledge base. Prefer common, reusable tags (e.g. "golang", "concurrency", "kubernetes") over hyper-specific ones. Use single words or hyphenated multi-words; no spaces.
+2. ` + "`answer`" + ` — a clear, well-structured Markdown explanation suitable for later reference. Aim for the level of a senior engineer briefing a teammate who is new to the topic: accurate, concrete, with small examples where they help. Do not include a top-level Markdown H1 title; the saved document title is stored separately in frontmatter. Start with the explanatory body directly, using ## or lower headings for sections only when useful. No preamble, no meta-commentary, no "Here is an explanation of…".
+
+3. ` + "`tags`" + ` — 1 to 5 short lowercase tags suitable for cataloging this knowledge in a tag-indexed knowledge base. Prefer common, reusable tags (e.g. "golang", "concurrency", "kubernetes") over hyper-specific ones. Use single words or hyphenated multi-words; no spaces.
 
 Think step-by-step internally before composing your reply.
 
-If the question is genuinely unanswerable, set ` + "`answer`" + ` to a brief one-paragraph Markdown explanation of why, and ` + "`tags`" + ` to an empty array.`
+If the question is genuinely unanswerable, set ` + "`title`" + ` to a concise restatement of the question, ` + "`answer`" + ` to a brief one-paragraph Markdown explanation of why, and ` + "`tags`" + ` to an empty array.`
 
 var askSchema = llm.Schema{
 	Name:        "knowledge_draft",
-	Description: "A drafted Markdown explanation with suggested tags for a knowledge base.",
+	Description: "A drafted document title, Markdown explanation, and suggested tags for a knowledge base.",
 	Schema: map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"title": map[string]any{
+				"type":        "string",
+				"maxLength":   80,
+				"description": "Concise human document title. No Markdown, quotes, or trailing punctuation.",
+			},
 			"answer": map[string]any{
 				"type":        "string",
 				"description": "Markdown explanation body. Do not start with a top-level H1 title; saved documents store the title separately in frontmatter.",
@@ -136,7 +142,7 @@ var askSchema = llm.Schema{
 				"description": "1–5 short lowercase tag strings (single word or hyphenated). Empty array if the question is unanswerable.",
 			},
 		},
-		"required":             []string{"answer", "tags"},
+		"required":             []string{"title", "answer", "tags"},
 		"additionalProperties": false,
 	},
 }
@@ -177,6 +183,7 @@ func (h *Handler) PostAsk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var parsed struct {
+		Title  string   `json:"title"`
 		Answer string   `json:"answer"`
 		Tags   []string `json:"tags"`
 	}
@@ -188,9 +195,19 @@ func (h *Handler) PostAsk(w http.ResponseWriter, r *http.Request) {
 
 	h.writeJSON(w, http.StatusOK, askResponse{
 		Question: question,
+		Title:    cleanAskTitle(parsed.Title, question),
 		Answer:   strings.TrimSpace(parsed.Answer),
 		Tags:     cleanTags(parsed.Tags),
 	})
+}
+
+func cleanAskTitle(title, fallback string) string {
+	title = strings.Trim(strings.TrimSpace(title), `"'`)
+	title = strings.TrimRight(title, ".:;")
+	if title != "" {
+		return title
+	}
+	return strings.TrimSpace(fallback)
 }
 
 // cleanTags trims whitespace from each tag and drops empties, leaving the rest
