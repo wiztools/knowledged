@@ -23,12 +23,13 @@ import (
 
 func main() {
 	repoPath := flag.String("repo", "", "path to the knowledge Git repository (required)")
-	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic, openai, jan)")
+	providerName := flag.String("llm-provider", "ollama", "LLM provider to use (ollama, anthropic, openai, jan, nous)")
 	model := flag.String("model", "", "LLM model name (defaults to provider-specific default when unset)")
 	port := flag.String("port", "9090", "HTTP listen port")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server base URL")
 	janURL := flag.String("jan-url", "http://localhost:8080", "Jan server base URL")
 	openaiURL := flag.String("openai-url", "https://api.openai.com", "OpenAI API base URL (override for Azure OpenAI or OpenAI-compatible gateways)")
+	nousURL := flag.String("nous-url", "https://inference-api.nousresearch.com", "Nous Research portal base URL")
 	pushOriginEvery := flag.Duration("push-origin-every", 0, "if greater than zero, periodically push the current branch to origin from the single git worker (for example: 24h)")
 	askReasoningBudget := flag.Int("ask-reasoning-budget", 2000, "thinking-token budget for POST /ask. Enables Anthropic extended thinking, Ollama think=true, or Jan reasoning_effort on supporting models; pass 0 to disable")
 	flag.Parse()
@@ -106,9 +107,23 @@ func main() {
 			"provider", "jan",
 			"url", *janURL,
 			"model", modelDisplay)
+	case "nous":
+		apiKey := os.Getenv("NOUS_API_KEY")
+		if apiKey == "" {
+			logger.Error("NOUS_API_KEY environment variable is not set")
+			os.Exit(1)
+		}
+		if *model == "" {
+			*model = "z-ai/glm-5.2"
+		}
+		provider = llm.NewNous(*nousURL, apiKey, *model, logger)
+		logger.Info("LLM provider initialized",
+			"provider", "nous",
+			"url", *nousURL,
+			"model", *model)
 	default:
 		logger.Error("unknown LLM provider", "provider", *providerName,
-			"supported", []string{"ollama", "anthropic", "openai", "jan"})
+			"supported", []string{"ollama", "anthropic", "openai", "jan", "nous"})
 		os.Exit(1)
 	}
 
