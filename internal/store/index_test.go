@@ -5,115 +5,13 @@ import (
 	"testing"
 )
 
-func TestRemoveIndexEntry(t *testing.T) {
-	st := newTestStore(t)
-
-	index := `# Index
-
-<!-- Auto-managed by knowledged. Do not edit manually. -->
-
-- [Go Goroutines](tech/go/goroutines.md) — concurrency primitives
-- [Rust Ownership](lang/rust/ownership.md) — memory safety model
-- [Docker Setup](infra/docker/setup.md) — container basics
-`
-	if err := st.WriteIndex(index); err != nil {
-		t.Fatalf("WriteIndex: %v", err)
-	}
-	if err := st.Commit("add index"); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-
-	if err := st.RemoveIndexEntry("lang/rust/ownership.md"); err != nil {
-		t.Fatalf("RemoveIndexEntry: %v", err)
-	}
-
-	got, err := st.ReadIndex()
-	if err != nil {
-		t.Fatalf("ReadIndex: %v", err)
-	}
-
-	if strings.Contains(got, "lang/rust/ownership.md") {
-		t.Errorf("expected entry to be removed, still present:\n%s", got)
-	}
-	if !strings.Contains(got, "tech/go/goroutines.md") {
-		t.Errorf("expected other entries to remain:\n%s", got)
-	}
-	if !strings.Contains(got, "infra/docker/setup.md") {
-		t.Errorf("expected other entries to remain:\n%s", got)
-	}
-}
-
-func TestRemoveIndexEntry_NotInIndex(t *testing.T) {
-	st := newTestStore(t)
-	// RemoveIndexEntry for a path not in the index should be a no-op (not an error).
-	if err := st.RemoveIndexEntry("does/not/exist.md"); err != nil {
-		t.Fatalf("expected no error for missing index entry, got: %v", err)
-	}
-}
-
-func TestUpdateIndexEntry(t *testing.T) {
-	st := newTestStore(t)
-
-	index := `# Index
-
-<!-- Auto-managed by knowledged. Do not edit manually. -->
-
-- [Go Goroutines](tech/go/goroutines.md) — concurrency primitives
-- [Rust Ownership](lang/rust/ownership.md) — memory safety model
-`
-	if err := st.WriteIndex(index); err != nil {
-		t.Fatalf("WriteIndex: %v", err)
-	}
-
-	if err := st.UpdateIndexEntry("tech/go/goroutines.md", "Go Scheduler", "updated runtime notes"); err != nil {
-		t.Fatalf("UpdateIndexEntry: %v", err)
-	}
-
-	got, err := st.ReadIndex()
-	if err != nil {
-		t.Fatalf("ReadIndex: %v", err)
-	}
-	if !strings.Contains(got, "- [Go Scheduler](tech/go/goroutines.md) — updated runtime notes") {
-		t.Fatalf("expected updated entry, got:\n%s", got)
-	}
-	if !strings.Contains(got, "lang/rust/ownership.md") {
-		t.Fatalf("expected other entries to remain, got:\n%s", got)
-	}
-}
-
-func TestUpdateIndexEntry_PreservesEmptyFields(t *testing.T) {
-	st := newTestStore(t)
-
-	index := `# Index
-
-<!-- Auto-managed by knowledged. Do not edit manually. -->
-
-- [Go Goroutines](tech/go/goroutines.md) — concurrency primitives
-`
-	if err := st.WriteIndex(index); err != nil {
-		t.Fatalf("WriteIndex: %v", err)
-	}
-
-	if err := st.UpdateIndexEntry("tech/go/goroutines.md", "", "new description"); err != nil {
-		t.Fatalf("UpdateIndexEntry: %v", err)
-	}
-
-	got, err := st.ReadIndex()
-	if err != nil {
-		t.Fatalf("ReadIndex: %v", err)
-	}
-	if !strings.Contains(got, "- [Go Goroutines](tech/go/goroutines.md) — new description") {
-		t.Fatalf("expected title to be preserved, got:\n%s", got)
-	}
-}
-
 func TestRebuildIndex(t *testing.T) {
 	got := RebuildIndex([]NoteWithFrontmatter{
 		{
-			Path: "ai/llm/gguf.md",
+			Path: "ai/concepts/llm-architecture/lora.md",
 			Frontmatter: Frontmatter{
-				Title:       "GGUF Models",
-				Description: "Local model format",
+				Title:       "LoRA",
+				Description: "Low-rank adaptation",
 			},
 		},
 		{
@@ -123,21 +21,22 @@ func TestRebuildIndex(t *testing.T) {
 			},
 		},
 		{
-			Path: "ai/rag.md",
+			Path: "ai/concepts/llm-architecture/speculative-decoding.md",
 			Frontmatter: Frontmatter{
-				Title:       "RAG",
-				Description: "Retrieval notes",
+				Title:       "Speculative Decoding",
+				Description: "Draft + target model",
 			},
 		},
 	})
 
+	// Sections are the leaf directory, humanized, sorted alphabetically.
 	want := `# Index
 
 <!-- Auto-managed by knowledged. Do not edit manually. -->
 
-## AI
-- [GGUF Models](ai/llm/gguf.md) — Local model format
-- [RAG](ai/rag.md) — Retrieval notes
+## LLM Architecture
+- [LoRA](ai/concepts/llm-architecture/lora.md) — Low-rank adaptation
+- [Speculative Decoding](ai/concepts/llm-architecture/speculative-decoding.md) — Draft + target model
 
 ## Notes
 - [Root Note](notes/root.md)
@@ -160,5 +59,41 @@ func TestRebuildIndex_SkipsInvalidAndUntitledNotes(t *testing.T) {
 	}
 	if !strings.Contains(got, "## Source Materials\n- [Web Sources](source-materials/web.md)\n") {
 		t.Fatalf("RebuildIndex did not render humanized section:\n%s", got)
+	}
+}
+
+func TestRebuildIndex_SectionOverride(t *testing.T) {
+	got := RebuildIndex([]NoteWithFrontmatter{
+		{
+			Path: "videos/ai-recommendations/clarity.md",
+			Frontmatter: Frontmatter{
+				Title:       "Clarity",
+				Description: "New skill in the age of AI",
+				Section:     "AI & The Future of Work",
+			},
+		},
+	})
+
+	// The frontmatter override wins over the path-derived "Ai Recommendations".
+	if !strings.Contains(got, "## AI & The Future of Work\n- [Clarity](videos/ai-recommendations/clarity.md) — New skill in the age of AI\n") {
+		t.Fatalf("override not honored:\n%s", got)
+	}
+	if strings.Contains(got, "## Ai Recommendations") {
+		t.Fatalf("path-derived section leaked despite override:\n%s", got)
+	}
+}
+
+func TestSectionNameForPath(t *testing.T) {
+	cases := map[string]string{
+		"ai/concepts/llm-architecture/lora.md": "LLM Architecture", // leaf dir, acronym upper-cased
+		"ai/concepts/mixture-of-experts.md":    "Concepts",         // parent dir humanized
+		"notes/ml/gguf.md":                     "ML",
+		"docs/harness-engineering.md":          "Docs",
+		"root.md":                              "Notes", // top-level file, no directory
+	}
+	for path, want := range cases {
+		if got := sectionNameForPath(path); got != want {
+			t.Errorf("sectionNameForPath(%q) = %q, want %q", path, got, want)
+		}
 	}
 }

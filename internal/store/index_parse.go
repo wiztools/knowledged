@@ -115,35 +115,6 @@ func (p ParsedIndex) SubtreeFor(names []string) string {
 	return ParsedIndex{Header: p.Header, Sections: subset}.Render()
 }
 
-// ReplaceSections returns a copy where any section whose name matches an
-// entry in updates is replaced. Updates whose names match no existing
-// section are appended in input order. Matching is case-insensitive on
-// trimmed names; the original heading casing is preserved on update.
-func (p ParsedIndex) ReplaceSections(updates []IndexSection) ParsedIndex {
-	byName := make(map[string]string, len(updates))
-	for _, u := range updates {
-		byName[normaliseSectionName(u.Name)] = u.Body
-	}
-	seen := make(map[string]bool, len(updates))
-	out := make([]IndexSection, 0, len(p.Sections)+len(updates))
-	for _, s := range p.Sections {
-		key := normaliseSectionName(s.Name)
-		if body, ok := byName[key]; ok {
-			out = append(out, IndexSection{Name: s.Name, Body: body})
-			seen[key] = true
-			continue
-		}
-		out = append(out, s)
-	}
-	for _, u := range updates {
-		key := normaliseSectionName(u.Name)
-		if !seen[key] {
-			out = append(out, IndexSection{Name: strings.TrimSpace(u.Name), Body: u.Body})
-		}
-	}
-	return ParsedIndex{Header: p.Header, Sections: out}
-}
-
 func normaliseSectionName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }

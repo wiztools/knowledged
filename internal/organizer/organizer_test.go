@@ -98,12 +98,6 @@ func TestDecide_TwoPass_RouteThenPlace(t *testing.T) {
 	if d.TargetPath != "tech/go/generics.md" {
 		t.Errorf("target_path = %q, want %q", d.TargetPath, "tech/go/generics.md")
 	}
-	if !strings.Contains(d.UpdatedIndex, "Generics") {
-		t.Errorf("updated index missing new entry:\n%s", d.UpdatedIndex)
-	}
-	if !strings.Contains(d.UpdatedIndex, "## Docker") {
-		t.Errorf("updated index lost Docker section (splice failed):\n%s", d.UpdatedIndex)
-	}
 
 	if len(llm.calls) != 2 {
 		t.Fatalf("expected 2 LLM calls, got %d", len(llm.calls))
@@ -124,16 +118,15 @@ func TestDecide_TwoPass_RouteThenPlace(t *testing.T) {
 	}
 }
 
-func TestDecide_NewSectionAppended(t *testing.T) {
+func TestDecide_NewSectionFromTargetFolder(t *testing.T) {
+	// The section is implied by the target folder, so a "new section" is just a
+	// note placed in a new directory — the model returns only the target path.
 	routeReply := `{"candidate_sections":[],"proposed_new_section":"Frontend"}`
 	placeReply := `{
   "target_path": "web/frontend/react.md",
   "title": "React",
   "description": "Component-based UI library",
-  "refactors": [],
-  "updated_sections": [
-    {"name": "Frontend", "body": "- [React](web/frontend/react.md) — component-based UI library\n"}
-  ]
+  "refactors": []
 }`
 
 	org, _, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
@@ -143,11 +136,8 @@ func TestDecide_NewSectionAppended(t *testing.T) {
 		t.Fatalf("Decide: %v", err)
 	}
 
-	if !strings.Contains(d.UpdatedIndex, "## Frontend") {
-		t.Errorf("expected new section appended:\n%s", d.UpdatedIndex)
-	}
-	if !strings.Contains(d.UpdatedIndex, "## Go") || !strings.Contains(d.UpdatedIndex, "## Docker") {
-		t.Errorf("expected existing sections preserved:\n%s", d.UpdatedIndex)
+	if d.TargetPath != "web/frontend/react.md" {
+		t.Errorf("target_path = %q, want web/frontend/react.md", d.TargetPath)
 	}
 }
 
@@ -176,9 +166,6 @@ func TestDecide_UsesSuppliedTitleAndTags(t *testing.T) {
 	}
 	if got, want := strings.Join(d.Tags, ","), "go,language"; got != want {
 		t.Fatalf("Tags = %q, want %q", got, want)
-	}
-	if !strings.Contains(d.UpdatedIndex, "[User Title](tech/go/generics.md)") {
-		t.Fatalf("UpdatedIndex did not preserve supplied title:\n%s", d.UpdatedIndex)
 	}
 	if !strings.Contains(llm.calls[1].user, "Title from user: User Title") {
 		t.Fatalf("placement prompt missing supplied title:\n%s", llm.calls[1].user)
@@ -219,26 +206,16 @@ func TestDecide_UsesGeneratedTagsWhenNoTagsSupplied(t *testing.T) {
 func TestDecide_RejectsEmptyTargetPath(t *testing.T) {
 	org, _, _ := newOrganizerWithIndex(t, seedIndex, []string{
 		`{"candidate_sections":["Go"],"proposed_new_section":""}`,
-		`{"target_path":"","title":"x","description":"x","updated_sections":[{"name":"Go","body":"-"}]}`,
+		`{"target_path":"","title":"x","description":"x"}`,
 	})
 	if _, err := org.Decide(context.Background(), "x", "", "", nil); err == nil {
 		t.Fatal("expected error for empty target_path, got nil")
 	}
 }
 
-func TestDecide_RejectsMissingUpdatedSections(t *testing.T) {
-	org, _, _ := newOrganizerWithIndex(t, seedIndex, []string{
-		`{"candidate_sections":["Go"],"proposed_new_section":""}`,
-		`{"target_path":"tech/go/x.md","title":"x","description":"x","updated_sections":[]}`,
-	})
-	if _, err := org.Decide(context.Background(), "x", "", "", nil); err == nil {
-		t.Fatal("expected error for empty updated_sections, got nil")
-	}
-}
-
 func TestDecide_UsesStructuredOutput(t *testing.T) {
 	routeReply := `{"candidate_sections":["Go"],"proposed_new_section":""}`
-	placeReply := `{"target_path":"tech/go/x.md","title":"x","description":"x","updated_sections":[{"name":"Go","body":"- [x](tech/go/x.md) — y\n"}]}`
+	placeReply := `{"target_path":"tech/go/x.md","title":"x","description":"x"}`
 
 	org, llm, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
 	if _, err := org.Decide(context.Background(), "x", "", "", nil); err != nil {
@@ -265,7 +242,7 @@ func TestDecide_UsesStructuredOutput(t *testing.T) {
 
 func TestDecideAvoidingWarnsAboutExistingTargetPath(t *testing.T) {
 	routeReply := `{"candidate_sections":["Go"],"proposed_new_section":""}`
-	placeReply := `{"target_path":"tech/go/generics-2.md","title":"x","description":"x","updated_sections":[{"name":"Go","body":"- [x](tech/go/generics-2.md) — y\n"}]}`
+	placeReply := `{"target_path":"tech/go/generics-2.md","title":"x","description":"x"}`
 
 	org, llm, _ := newOrganizerWithIndex(t, seedIndex, []string{routeReply, placeReply})
 	if _, err := org.DecideAvoiding(context.Background(), "x", "", "", nil, []string{"tech/go/generics.md"}); err != nil {
@@ -281,7 +258,7 @@ func TestDecideAvoidingWarnsAboutExistingTargetPath(t *testing.T) {
 
 func TestDecide_EmptyIndex(t *testing.T) {
 	routeReply := `{"candidate_sections":[],"proposed_new_section":"Go"}`
-	placeReply := `{"target_path":"tech/go/intro.md","title":"Go Intro","description":"Intro","updated_sections":[{"name":"Go","body":"- [Go Intro](tech/go/intro.md) — intro\n"}]}`
+	placeReply := `{"target_path":"tech/go/intro.md","title":"Go Intro","description":"Intro"}`
 
 	// Use the bootstrapped (empty) index.
 	org, llm, _ := newOrganizerWithIndex(t, "", []string{routeReply, placeReply})
@@ -290,8 +267,8 @@ func TestDecide_EmptyIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if !strings.Contains(d.UpdatedIndex, "## Go") {
-		t.Errorf("expected new Go section in updated index:\n%s", d.UpdatedIndex)
+	if d.TargetPath != "tech/go/intro.md" {
+		t.Errorf("target_path = %q, want tech/go/intro.md", d.TargetPath)
 	}
 	if !strings.Contains(llm.calls[0].user, "(none — INDEX.md has no sections yet)") {
 		t.Errorf("pass 1 prompt should mark empty index:\n%s", llm.calls[0].user)
@@ -303,17 +280,26 @@ func TestExecuteWritesFrontmatter(t *testing.T) {
 	created := time.Date(2026, 5, 27, 10, 0, 0, 0, time.UTC)
 	modified := time.Date(2026, 5, 27, 11, 0, 0, 0, time.UTC)
 	decision := &Decision{
-		TargetPath:   "tech/go/generics.md",
-		Title:        "Go Generics",
-		Description:  "Type parameters in Go",
-		Tags:         []string{"go", "language"},
-		Created:      created,
-		Modified:     modified,
-		UpdatedIndex: seedIndex,
+		TargetPath:  "tech/go/generics.md",
+		Title:       "Go Generics",
+		Description: "Type parameters in Go",
+		Tags:        []string{"go", "language"},
+		Created:     created,
+		Modified:    modified,
 	}
 
 	if err := org.Execute(context.Background(), "job-123", "# Go Generics\n\nBody.\n", decision); err != nil {
 		t.Fatalf("Execute: %v", err)
+	}
+
+	// Execute regenerates INDEX.md from the notes on disk; the new note should
+	// appear under its leaf-directory section ("Go").
+	idx, err := st.ReadIndex()
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	if !strings.Contains(idx, "## Go\n- [Go Generics](tech/go/generics.md) — Type parameters in Go\n") {
+		t.Fatalf("rebuilt index missing new entry:\n%s", idx)
 	}
 
 	content, err := st.ReadFile("tech/go/generics.md")
@@ -354,10 +340,9 @@ func TestExecuteRejectsExistingTargetPath(t *testing.T) {
 	}
 
 	decision := &Decision{
-		TargetPath:   "tech/go/generics.md",
-		Title:        "Replacement",
-		Description:  "Should not overwrite",
-		UpdatedIndex: seedIndex,
+		TargetPath:  "tech/go/generics.md",
+		Title:       "Replacement",
+		Description: "Should not overwrite",
 	}
 	err := org.Execute(context.Background(), "job-123", "replacement body", decision)
 	if !errors.Is(err, store.ErrFileExists) {

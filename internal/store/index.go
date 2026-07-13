@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -22,6 +23,18 @@ func (s *Store) ReadIndex() (string, error) {
 // WriteIndex overwrites INDEX.md with the given content and stages it.
 func (s *Store) WriteIndex(content string) error {
 	return s.WriteFile(indexFile, content)
+}
+
+// RebuildAndWriteIndex regenerates INDEX.md as a deterministic projection of
+// every note's frontmatter and stages it. This is the ONLY path that writes
+// INDEX.md: the index is a pure function of the notes, never hand-spliced, so
+// it cannot drift or accumulate duplicate sections.
+func (s *Store) RebuildAndWriteIndex() error {
+	notes, err := s.ListMarkdownNotes()
+	if err != nil {
+		return fmt.Errorf("listing notes for index rebuild: %w", err)
+	}
+	return s.WriteIndex(RebuildIndex(notes))
 }
 
 // RebuildIndex renders INDEX.md as a deterministic projection of note
@@ -49,7 +62,7 @@ func RebuildIndexWithHeader(header string, notes []NoteWithFrontmatter) string {
 		if title == "" {
 			continue
 		}
-		section := sectionNameForPath(path)
+		section := sectionForNote(note)
 		sections[section] = append(sections[section], entry{
 			path:        path,
 			title:       title,
@@ -90,107 +103,35 @@ func RebuildIndexWithHeader(header string, notes []NoteWithFrontmatter) string {
 	return sb.String()
 }
 
-// RemoveIndexEntry removes the line in INDEX.md that references path and
-// stages the result. It is a no-op (not an error) when path is not present.
-func (s *Store) RemoveIndexEntry(path string) error {
-	cleanPath, err := CleanContentPath(path)
-	if err != nil {
-		return err
+// sectionForNote returns the INDEX.md heading a note belongs under. The
+// frontmatter Section override wins when set; otherwise the section is derived
+// from the note's location. Placement is therefore a pure function of (path,
+// optional override) — there is no separately-stored section state to drift.
+func sectionForNote(note NoteWithFrontmatter) string {
+	if s := strings.TrimSpace(note.Frontmatter.Section); s != "" {
+		return s
 	}
-	current, err := s.ReadIndex()
-	if err != nil {
-		return err
-	}
-
-	lines := strings.Split(current, "\n")
-	kept := lines[:0]
-	for _, line := range lines {
-		if strings.Contains(line, "("+cleanPath+")") {
-			continue
-		}
-		kept = append(kept, line)
-	}
-
-	// Nothing changed — skip the write.
-	if len(kept) == len(lines) {
-		return nil
-	}
-
-	return s.WriteIndex(strings.Join(kept, "\n"))
+	return sectionNameForPath(note.Path)
 }
 
-// UpdateIndexEntry updates the title and/or description for the entry that
-// references path. Empty title or description values preserve the existing
-// component. Missing index entries are left untouched.
-func (s *Store) UpdateIndexEntry(path, title, description string) error {
-	cleanPath, err := CleanContentPath(path)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(title) == "" && strings.TrimSpace(description) == "" {
-		return nil
-	}
-	current, err := s.ReadIndex()
-	if err != nil {
-		return err
-	}
-
-	lines := strings.Split(current, "\n")
-	changed := false
-	for i, line := range lines {
-		if !strings.Contains(line, "("+cleanPath+")") {
-			continue
-		}
-		existingTitle, existingDescription := parseIndexEntryLine(line, cleanPath)
-		nextTitle := strings.TrimSpace(title)
-		if nextTitle == "" {
-			nextTitle = existingTitle
-		}
-		nextDescription := strings.TrimSpace(description)
-		if nextDescription == "" {
-			nextDescription = existingDescription
-		}
-		next := "- [" + nextTitle + "](" + cleanPath + ")"
-		if nextDescription != "" {
-			next += " — " + nextDescription
-		}
-		if line != next {
-			lines[i] = next
-			changed = true
-		}
-		break
-	}
-	if !changed {
-		return nil
-	}
-	return s.WriteIndex(strings.Join(lines, "\n"))
-}
-
-func parseIndexEntryLine(line, path string) (string, string) {
-	title := strings.TrimSpace(line)
-	description := ""
-	link := "](" + path + ")"
-	if start := strings.Index(title, "["); start >= 0 {
-		if end := strings.Index(title[start:], link); end >= 0 {
-			rawTitle := title[start+1 : start+end]
-			title = strings.TrimSpace(rawTitle)
-			rest := strings.TrimSpace(line[start+end+len(link)+1:])
-			rest = strings.TrimPrefix(rest, "—")
-			description = strings.TrimSpace(rest)
-		}
-	}
-	return title, description
-}
-
+// sectionNameForPath derives a section heading from the note's leaf directory
+// (the folder immediately containing the file), humanized. A file directly at
+// the repo root has no directory and lands in "Notes". Using the leaf folder —
+// not the first path segment — lets the directory tree be the taxonomy:
+// ai/concepts/llm-architecture/lora.md → "LLM Architecture".
 func sectionNameForPath(path string) string {
-	first := path
-	if slash := strings.Index(first, "/"); slash >= 0 {
-		first = first[:slash]
+	slash := strings.LastIndex(path, "/")
+	if slash < 0 {
+		return "Notes" // top-level file, no directory
 	}
-	if first == "" || first == "." {
+	dir := path[:slash]
+	if seg := strings.LastIndex(dir, "/"); seg >= 0 {
+		dir = dir[seg+1:]
+	}
+	if dir == "" || dir == "." {
 		return "Notes"
 	}
-	return humanizePathSegment(first)
+	return humanizePathSegment(dir)
 }
 
 func humanizePathSegment(segment string) string {
@@ -209,7 +150,7 @@ func humanizePathSegment(segment string) string {
 func titleWord(word string) string {
 	upper := strings.ToUpper(word)
 	switch upper {
-	case "AI", "API", "CLI", "CSS", "HTML", "HTTP", "LLM", "MCP", "SDK", "SQL", "UI", "UX":
+	case "AI", "API", "CLI", "CSS", "HTML", "HTTP", "LLM", "MCP", "ML", "SDK", "SQL", "UI", "UX":
 		return upper
 	}
 	if len(word) == 1 {

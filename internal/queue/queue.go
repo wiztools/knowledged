@@ -603,8 +603,8 @@ func (q *Queue) executeDelete(ctx context.Context, job *Job) {
 		return
 	}
 
-	if err := q.store.RemoveIndexEntry(job.Path); err != nil {
-		q.logger.Error("RemoveIndexEntry failed", "job_id", job.ID, "path", job.Path, "error", err)
+	if err := q.store.RebuildAndWriteIndex(); err != nil {
+		q.logger.Error("index rebuild failed during delete", "job_id", job.ID, "path", job.Path, "error", err)
 		q.finalize(job, "", err)
 		return
 	}
@@ -650,12 +650,10 @@ func (q *Queue) executeEdit(ctx context.Context, job *Job) {
 		return
 	}
 
-	if job.Title != "" || job.Description != "" {
-		if err := q.store.UpdateIndexEntry(job.Path, job.Title, job.Description); err != nil {
-			q.logger.Error("UpdateIndexEntry failed", "job_id", job.ID, "path", job.Path, "error", err)
-			q.finalize(job, "", err)
-			return
-		}
+	if err := q.store.RebuildAndWriteIndex(); err != nil {
+		q.logger.Error("index rebuild failed during edit", "job_id", job.ID, "path", job.Path, "error", err)
+		q.finalize(job, "", err)
+		return
 	}
 
 	msg := fmt.Sprintf("edit(%s): %s", job.ID, job.Path)
