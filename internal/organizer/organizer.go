@@ -18,10 +18,10 @@ import (
 //   plus the new content. It picks 1-3 existing sections to consider for
 //   placement and may propose a new section.
 // Pass 2 (decide): the model sees just those sections' bullets plus the new
-//   content. It returns the target path, optional refactors limited to those
-//   sections, and updated bodies for the touched sections (which get spliced
-//   back into the full INDEX). The model never has to echo a 5KB index it
-//   didn't change.
+//   content. It returns the target path (whose folder determines the INDEX
+//   section), metadata, and optional refactors limited to those sections. The
+//   model never emits INDEX text — after the write, INDEX.md is regenerated as
+//   a deterministic projection of the notes (store.RebuildAndWriteIndex).
 //
 // Both passes use llm.CompleteStructured — the schemas enforce reply shape
 // and the per-field descriptions live next to each field name (the strongest
@@ -43,9 +43,9 @@ New content to store:
 
 const decideSystemPrompt = `You are the placement step of a knowledge-base organizer.
 You see ONLY the sections of INDEX.md that the routing step pre-selected, plus
-the new content. Decide where the file goes, propose any narrowly-scoped
-refactors, and return updated bodies for ONLY the sections you actually
-changed.`
+the new content. Decide where the file goes and propose any narrowly-scoped
+refactors. The target_path's folder determines the INDEX section, so choose a
+directory that matches where the note belongs; you do not write INDEX text.`
 
 const decidePromptTemplate = `Relevant sections of INDEX.md:
 ---
@@ -87,7 +87,7 @@ func routeSchema() llm.Schema {
 func placementSchema() llm.Schema {
 	return llm.Schema{
 		Name:        "placement_decision",
-		Description: "Final placement: target path, refactors, and updated section bodies.",
+		Description: "Final placement: target path (its folder determines the INDEX section), metadata, and any narrowly-scoped refactors.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -121,28 +121,8 @@ func placementSchema() llm.Schema {
 						"additionalProperties": false,
 					},
 				},
-				"updated_sections": map[string]any{
-					"type":        "array",
-					"minItems":    1,
-					"description": "Required. One entry per section you touched (including any new section you create).",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"name": map[string]any{
-								"type":        "string",
-								"description": "Section heading text (without the `## ` prefix).",
-							},
-							"body": map[string]any{
-								"type":        "string",
-								"description": "ONE bullet line per file in the form: - [Title](path.md) — description\\n",
-							},
-						},
-						"required":             []string{"name", "body"},
-						"additionalProperties": false,
-					},
-				},
 			},
-			"required":             []string{"target_path", "title", "description", "tags", "refactors", "updated_sections"},
+			"required":             []string{"target_path", "title", "description", "tags", "refactors"},
 			"additionalProperties": false,
 		},
 	}
@@ -154,12 +134,6 @@ type Refactor struct {
 	To   string `json:"to"`
 }
 
-// updatedSection mirrors store.IndexSection but carries JSON tags.
-type updatedSection struct {
-	Name string `json:"name"`
-	Body string `json:"body"`
-}
-
 // routeDecision is the pass-1 response.
 type routeDecision struct {
 	CandidateSections  []string `json:"candidate_sections"`
@@ -168,26 +142,24 @@ type routeDecision struct {
 
 // placementDecision is the pass-2 response.
 type placementDecision struct {
-	TargetPath      string           `json:"target_path"`
-	Title           string           `json:"title"`
-	Description     string           `json:"description"`
-	Tags            []string         `json:"tags"`
-	Refactors       []Refactor       `json:"refactors"`
-	UpdatedSections []updatedSection `json:"updated_sections"`
+	TargetPath  string     `json:"target_path"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Tags        []string   `json:"tags"`
+	Refactors   []Refactor `json:"refactors"`
 }
 
 // Decision is what the organizer hands back to the worker after both passes.
-// UpdatedIndex is the full INDEX.md rebuilt by splicing the model's
-// updated_sections into the existing index.
+// The INDEX is not carried here: it is regenerated from the notes after the
+// write (see Execute), so the model never produces index text.
 type Decision struct {
-	TargetPath   string
-	Title        string
-	Description  string
-	Tags         []string
-	Created      time.Time
-	Modified     time.Time
-	Refactors    []Refactor
-	UpdatedIndex string
+	TargetPath  string
+	Title       string
+	Description string
+	Tags        []string
+	Created     time.Time
+	Modified    time.Time
+	Refactors   []Refactor
 }
 
 // Organizer uses an LLM to decide where to place content and then applies
@@ -285,26 +257,16 @@ func (o *Organizer) DecideAvoiding(ctx context.Context, content, hint, title str
 		resolvedTags = cleanTags(placement.Tags)
 	}
 
-	// Splice the updated sections back into the full index.
-	updates := make([]store.IndexSection, 0, len(placement.UpdatedSections))
-	for _, u := range placement.UpdatedSections {
-		u.Body = rewriteIndexEntryMetadata(u.Body, placement.TargetPath, resolvedTitle, placement.Description)
-		updates = append(updates, store.IndexSection{Name: u.Name, Body: u.Body})
-	}
-	mergedIndex := parsed.ReplaceSections(updates).Render()
-
 	o.logger.Info("organizer placement decision",
 		"target_path", placement.TargetPath,
-		"refactors", len(placement.Refactors),
-		"sections_updated", len(updates))
+		"refactors", len(placement.Refactors))
 
 	return &Decision{
-		TargetPath:   placement.TargetPath,
-		Title:        resolvedTitle,
-		Description:  placement.Description,
-		Tags:         resolvedTags,
-		Refactors:    placement.Refactors,
-		UpdatedIndex: mergedIndex,
+		TargetPath:  placement.TargetPath,
+		Title:       resolvedTitle,
+		Description: placement.Description,
+		Tags:        resolvedTags,
+		Refactors:   placement.Refactors,
 	}, nil
 }
 
@@ -351,9 +313,9 @@ func (o *Organizer) Execute(ctx context.Context, jobID, content string, decision
 		return fmt.Errorf("writing content: %w", err)
 	}
 
-	o.logger.Info("updating INDEX.md")
-	if err := o.store.WriteIndex(decision.UpdatedIndex); err != nil {
-		return fmt.Errorf("updating index: %w", err)
+	o.logger.Info("rebuilding INDEX.md")
+	if err := o.store.RebuildAndWriteIndex(); err != nil {
+		return fmt.Errorf("rebuilding index: %w", err)
 	}
 
 	msg := fmt.Sprintf("store(%s): %s", jobID, decision.TargetPath)
@@ -415,23 +377,6 @@ func cleanTags(in []string) []string {
 	return out
 }
 
-func rewriteIndexEntryMetadata(body, path, title, description string) string {
-	lines := strings.Split(body, "\n")
-	link := "](" + path + ")"
-	for i, line := range lines {
-		if !strings.Contains(line, link) {
-			continue
-		}
-		next := "- [" + strings.TrimSpace(title) + "](" + path + ")"
-		if strings.TrimSpace(description) != "" {
-			next += " — " + strings.TrimSpace(description)
-		}
-		lines[i] = next
-		break
-	}
-	return strings.Join(lines, "\n")
-}
-
 func buildConflictBlock(paths []string) string {
 	if len(paths) == 0 {
 		return ""
@@ -464,9 +409,6 @@ func parsePlacement(raw string) (*placementDecision, error) {
 	}
 	if p.TargetPath == "" {
 		return nil, fmt.Errorf("LLM returned empty target_path")
-	}
-	if len(p.UpdatedSections) == 0 {
-		return nil, fmt.Errorf("LLM returned no updated_sections")
 	}
 	return &p, nil
 }

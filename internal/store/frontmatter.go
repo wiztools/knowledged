@@ -17,6 +17,12 @@ type Frontmatter struct {
 	Tags        []string  `yaml:"tags"`
 	Created     time.Time `yaml:"created"`
 	Modified    time.Time `yaml:"modified"`
+	// Section is an OPTIONAL override for the note's INDEX.md grouping. When
+	// empty (the common case) the section is derived from the note's directory
+	// path. Set it only to place a note under a heading that differs from its
+	// folder (e.g. a video filed under an editorial theme). Keeping placement
+	// derivable from the path avoids a second source of truth that can drift.
+	Section string `yaml:"section,omitempty"`
 }
 
 // ParseFrontmatter returns the YAML frontmatter and Markdown body from content.
@@ -65,6 +71,9 @@ func RenderFrontmatter(fm Frontmatter, body string) string {
 	sb.WriteString("---\n")
 	writeYAMLString(&sb, "title", fm.Title)
 	writeYAMLString(&sb, "description", fm.Description)
+	if strings.TrimSpace(fm.Section) != "" {
+		writeYAMLString(&sb, "section", fm.Section)
+	}
 	writeYAMLStringSlice(&sb, "tags", fm.Tags)
 	writeYAMLTime(&sb, "created", fm.Created)
 	writeYAMLTime(&sb, "modified", fm.Modified)
