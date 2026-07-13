@@ -101,7 +101,7 @@ func placementSchema() llm.Schema {
 				},
 				"description": map[string]any{
 					"type":        "string",
-					"description": "Required. One sentence, under 120 chars. Appears in the INDEX entry.",
+					"description": "Required. One sentence, under 120 chars, summarizing the NOTE'S SUBJECT MATTER — what the note is about, readable standalone. Appears in the INDEX entry. Do NOT narrate your placement or refactor actions here (creating a section, de-duplicating, moving files); describe the content only.",
 				},
 				"tags": map[string]any{
 					"type":        "array",
